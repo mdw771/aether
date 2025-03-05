@@ -1,0 +1,9 @@
+workspace/
+
+*.png
+
+*.safetensors
+*.model
+
+*.json
+*.txt
