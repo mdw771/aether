@@ -16,7 +16,7 @@ class ModelLoader:
     
     @staticmethod
     def get_local_model_repository_path():
-        return os.path.join(firefly.__path__[0], "models", "diffusers")
+        return os.path.join(firefly.__path__[0], os.pardir, "models")
     
 
 class HuggingFaceModelLoader(ModelLoader):
