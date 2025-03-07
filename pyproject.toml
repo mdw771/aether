@@ -19,10 +19,11 @@ dependencies = [
     "torch>=2.4.1",
     "torchvision",
     "tqdm",
-    "diffusers",
-    "accelerate",
-    "transformers",
-    "sentencepiece",
+    "diffusers==0.32.2",
+    "accelerate==1.4.0",
+    "transformers==4.49.0",
+    "sentencepiece==0.2.0",
+    "pty-chi@git+https://github.com/AdvancedPhotonSource/pty-chi.git",
 ]
 dynamic = ["version"]
 

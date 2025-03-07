@@ -7,3 +7,7 @@ workspace/
 
 *.json
 *.txt
+
+*.pyc
+.loglogin
+PKG-INFO

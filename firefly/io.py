@@ -106,4 +106,4 @@ if __name__ == "__main__":
         ).images[0]
 
         # Save the generated image
-        image.save("capybara.png") 
+        image.show()
