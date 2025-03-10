@@ -3,12 +3,14 @@ import logging
 
 from PIL import Image
 import torch
-from diffusers import StableDiffusion3Pipeline, DDIMScheduler
+from diffusers import StableDiffusion3Pipeline, StableDiffusionXLPipeline
 import diffusers.utils as dutils
 from ptychi.reconstructors.ad_ptychography import AutodiffPtychographyReconstructor
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 import ptychi.maps as maps
 from ptychi.io_handles import PtychographyDataset
+import ptychi.image_proc as ip
+
 import firefly.api as api
 from firefly.io import HuggingFaceStableDiffusionModelLoader
 
@@ -17,6 +19,16 @@ logger = logging.getLogger(__name__)
 
 
 class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
+    
+    
+    class TextEmbeddings:
+        prompt_embeds: torch.Tensor
+        negative_prompt_embeds: torch.Tensor
+        pooled_prompt_embeds: torch.Tensor
+        negative_pooled_prompt_embeds: torch.Tensor
+        add_time_ids: torch.Tensor
+        negative_add_time_ids: torch.Tensor
+        add_text_embeds: torch.Tensor
     
     options: "api.GuidedDiffusionReconstructorOptions"
     
@@ -31,13 +43,16 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         super().__init__(parameter_group, dataset=dataset, options=options, *args, **kwargs)
         
         self.model_loader = model_loader
-        self.pipe: StableDiffusion3Pipeline = None
+        self.pipe: StableDiffusionXLPipeline = None
         self.loss_function = maps.get_loss_function_by_enum(options.loss_function)()
         self.forward_model = None
-                
-        self.text_embeddings = {}
-        self.sampled_image: Image.Image = None
-        self._do_classifier_free_guidance = self.options.text_guidance_scale > 1
+        
+        self.current_denoise_step = 0
+        self.do_classifier_free_guidance = self.options.text_guidance_scale > 1 
+        self.text_embeddings = self.TextEmbeddings()
+        
+        self.sampled_image: torch.Tensor = None
+        self.sampled_image_pil: Image.Image = None
         
     def build(self):
         self.build_pipe()
@@ -46,8 +61,6 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
     def build_pipe(self):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
-        
-        # self.pipe.scheduler = DDIMScheduler.from_config(self.pipe.scheduler.config)
         
     def build_counter(self):
         super().build_counter()
@@ -62,6 +75,65 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         self.forward_model = self.forward_model_class(
             self.parameter_group, **self.forward_model_params
         )
+        
+    def preconditioned_phase_unwrap(self, obj: torch.Tensor) -> torch.Tensor:
+        """Phase unwrapping with preconditioning. The constant phase offset
+        is removed from the unwrapped phase using the phase of the center pixel
+        of the input.
+        
+        Parameters
+        ----------
+        obj: torch.Tensor
+            A (n_slices, h, w) complex tensor giving the object to be unwrapped.
+            
+        Returns
+        -------
+        torch.Tensor
+            A (n_slices, h, w) tensor giving the unwrapped phase.
+        """
+        phase = []
+        for obj_slice in obj:
+            phase_center = obj_slice[obj_slice.shape[0] // 2, obj_slice.shape[1] // 2].angle()
+            phase_slice = ip.unwrap_phase_2d(
+                obj_slice,
+                image_grad_method="fourier_differentiation",
+                image_integration_method="fourier"
+            )
+            phase_center_new = phase_slice[obj_slice.shape[0] // 2, obj_slice.shape[1] // 2]
+            phase_slice = phase_slice - phase_center_new + phase_center
+            phase.append(phase_slice)
+        phase = torch.stack(phase)
+        phase = self.parameter_group.object.preconditioner * phase
+        return phase
+        
+    def prepare_initial_latent(self) -> torch.Tensor:
+        """Get the initial latent code. The size of the latent is determined
+        by the pixel-space image size and the downscaling factor of the image
+        autoencoder. In general, the size is given by
+        
+        ```2 ** (len(self.vae.config.block_out_channels) - 1)``` 
+        
+        and is 8 for Stable Diffusion 3.5. The number of channels is given
+        by the number of input channels of the U-net, as in
+        
+        ```self.pipe.unet.config.in_channels```
+        
+        Returns
+        -------
+        torch.Tensor
+            The initial latent code of shape (1, in_channels, h, w).
+        """
+        z = self.pipe.prepare_latents(
+            batch_size=1,
+            num_channels_latents=self.pipe.unet.config.in_channels,
+            height=self.parameter_group.object.lateral_shape[0],
+            width=self.parameter_group.object.lateral_shape[1],
+            dtype=self.text_embeddings.prompt_embeds.dtype,
+            device=self.text_embeddings.prompt_embeds.device,
+            generator=None,
+            latents=None
+        )
+        return z
         
     def noise_step(self, z_t: torch.Tensor, t: int, by: int):
         """Add noise to the latent code.
@@ -96,64 +168,6 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
                      torch.sqrt(1 - alpha_prod_t_prev / alpha_prod_t) * noise
         
         return z_t_plus_n
-        
-    def denoise_step(self, z_t: torch.Tensor, t: int):
-        """Denoise the latent code by one step. Text conditioning is added
-        to the noise through classifier-free guidance.
-        The input is detached, so this function is not differentiable.
-        
-        Parameters
-        ----------
-        z_t: torch.Tensor
-            The latent code to be denoised.
-        t: int
-            The timestep to denoise at.
-            
-        Returns
-        -------
-        z_tm1: torch.Tensor
-            The denoised latent code (x_{t-1}).
-        z_0_hat: torch.Tensor
-            The estimated noise-free image at time step 0.
-        """
-        with torch.no_grad():
-            latent_model_input = torch.cat([z_t] * 2) if self._do_classifier_free_guidance else z_t
-            timestep = t.expand(latent_model_input.shape[0])
-            
-            # Standard denoising step.
-            noise_pred = self.pipe.transformer(
-                hidden_states=latent_model_input,
-                timestep=timestep,
-                encoder_hidden_states=self.text_embeddings["prompt_embeds"],
-                pooled_projections=self.text_embeddings["pooled_prompt_embeds"],
-                return_dict=False
-            )[0]
-            
-            # Classifier-free (text) guidance step.
-            if self._do_classifier_free_guidance:
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + self.options.text_guidance_scale * (noise_pred_text - noise_pred_uncond)
-            
-            step_output = self.pipe.scheduler.step(noise_pred, t, z_t, return_dict=True)
-            z_tm1 = step_output.prev_sample
-            if hasattr(step_output, "pred_original_sample"):
-                z_0_hat = step_output.pred_original_sample
-            else:
-                try:
-                    z_0_hat = self.estimate_t0_latent(z_tm1, t, noise_pred)
-                except AttributeError:
-                    logger.warning(
-                        f"Unable to estimate sample at t=0 with {self.pipe.scheduler.__class__.__name__}, "
-                        "so I am just using z_{t-1} as the estimate."
-                    )
-                    z_0_hat = z_tm1
-                    
-            
-            if z_tm1.dtype != z_t.dtype:
-                z_tm1 = z_tm1.to(z_t.dtype)
-            if z_0_hat.dtype != z_t.dtype:
-                z_0_hat = z_0_hat.to(z_t.dtype)
-        return z_tm1, z_0_hat
     
     def physical_guidance_step(self, z_t: torch.Tensor, z_0_hat: torch.Tensor):
         """Update the latent code using the physical guidance.
@@ -183,9 +197,34 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         torch.Tensor
             The decoded image in the structure compatible with the forward model.
         """
-        z = z / self.pipe.vae.config.scaling_factor + self.pipe.vae.config.shift_factor
-        decoded_image = self.pipe.vae.decode(z, return_dict=False)[0]
-        return decoded_image
+        # make sure the VAE is in float32 mode, as it overflows in float16
+        needs_upcasting = self.pipe.vae.dtype == torch.float16 and self.pipe.vae.config.force_upcast
+
+        if needs_upcasting:
+            self.pipe.upcast_vae()
+            z = z.to(next(iter(self.pipe.vae.post_quant_conv.parameters())).dtype)
+
+        # unscale/denormalize the latents
+        # denormalize with the mean and std if available and not None
+        has_latents_mean = hasattr(self.pipe.vae.config, "latents_mean") and self.pipe.vae.config.latents_mean is not None
+        has_latents_std = hasattr(self.pipe.vae.config, "latents_std") and self.pipe.vae.config.latents_std is not None
+        if has_latents_mean and has_latents_std:
+            latents_mean = (
+                torch.tensor(self.pipe.vae.config.latents_mean).view(1, 4, 1, 1).to(z.device, z.dtype)
+            )
+            latents_std = (
+                torch.tensor(self.pipe.vae.config.latents_std).view(1, 4, 1, 1).to(z.device, z.dtype)
+            )
+            z = z * latents_std / self.pipe.vae.config.scaling_factor + latents_mean
+        else:
+            z = z / self.pipe.vae.config.scaling_factor
+
+        image = self.pipe.vae.decode(z, return_dict=False)[0]
+
+        # cast back to fp16 if needed
+        if needs_upcasting:
+            self.pipe.vae.to(dtype=torch.float16)
+        return image
     
     def encode_image(self, img: torch.Tensor):
         """Encode the image to the latent space.
@@ -200,9 +239,118 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         torch.Tensor
             The encoded latent code.
         """
-        z = self.pipe.vae.encode(img).latent_dist.sample()
-        z = (z - self.pipe.vae.config.shift_factor) * self.pipe.vae.config.scaling_factor
+        # make sure the VAE is in float32 mode, as it overflows in float16
+        needs_upcasting = self.pipe.vae.dtype == torch.float16 and self.pipe.vae.config.force_upcast
+
+        if needs_upcasting:
+            self.pipe.upcast_vae()
+            img = img.to(self.pipe.vae.dtype)
+            
+        z = self.pipe.vae.encode(img).latent_dist.mode()
+
+        # unscale/denormalize the latents
+        # denormalize with the mean and std if available and not None
+        has_latents_mean = hasattr(self.pipe.vae.config, "latents_mean") and self.pipe.vae.config.latents_mean is not None
+        has_latents_std = hasattr(self.pipe.vae.config, "latents_std") and self.pipe.vae.config.latents_std is not None
+        if has_latents_mean and has_latents_std:
+            latents_mean = (
+                torch.tensor(self.pipe.vae.config.latents_mean).view(1, 4, 1, 1).to(z.device, z.dtype)
+            )
+            latents_std = (
+                torch.tensor(self.pipe.vae.config.latents_std).view(1, 4, 1, 1).to(z.device, z.dtype)
+            )
+            z = (z - latents_mean) / latents_std * self.pipe.vae.config.scaling_factor
+        else:
+            z = z * self.pipe.vae.config.scaling_factor
+
+        # cast back to fp16 if needed
+        if needs_upcasting:
+            self.pipe.vae.to(dtype=torch.float16)
+            z = z.to(torch.float16)
         return z
+    
+    def prepare_added_time_ids_and_embeddings(self):
+        """Prepare the added time ids and embeddings.
+        """
+        add_text_embeds = self.text_embeddings.pooled_prompt_embeds
+        if self.pipe.text_encoder_2 is None:
+            text_encoder_projection_dim = int(self.text_embeddings.pooled_prompt_embeds.shape[-1])
+        else:
+            text_encoder_projection_dim = self.pipe.text_encoder_2.config.projection_dim
+
+        add_time_ids = self.pipe._get_add_time_ids(
+            tuple(self.parameter_group.object.lateral_shape),
+            crops_coords_top_left=(0, 0),
+            target_size=tuple(self.parameter_group.object.lateral_shape),
+            dtype=self.text_embeddings.prompt_embeds.dtype,
+            text_encoder_projection_dim=text_encoder_projection_dim,
+        )
+        negative_add_time_ids = add_time_ids
+
+        if self.do_classifier_free_guidance:
+            self.text_embeddings.prompt_embeds = torch.cat(
+                [self.text_embeddings.negative_prompt_embeds, self.text_embeddings.prompt_embeds], 
+                dim=0
+            )
+            add_text_embeds = torch.cat(
+                [self.text_embeddings.negative_pooled_prompt_embeds, add_text_embeds], 
+                dim=0
+            )
+            add_time_ids = torch.cat([negative_add_time_ids, add_time_ids], dim=0)
+            
+        add_time_ids = add_time_ids.repeat(1, 1)
+        
+        self.text_embeddings.add_time_ids = add_time_ids
+        self.text_embeddings.negative_add_time_ids = negative_add_time_ids
+        self.text_embeddings.add_text_embeds = add_text_embeds
+    
+    def denoise_step(self, z_t: torch.Tensor, t: int):
+        """Denoise the latent code by one step. Text conditioning is added
+        to the noise through classifier-free guidance.
+        The input is detached, so this function is not differentiable.
+        
+        Parameters
+        ----------
+        z_t: torch.Tensor
+            The latent code to be denoised.
+        t: int
+            The timestep to denoise at.
+            
+        Returns
+        -------
+        z_tm1: torch.Tensor
+            The denoised latent code (x_{t-1}).
+        z_0_hat: torch.Tensor
+            The estimated noise-free image at time step 0.
+        """
+        latent_model_input = torch.cat([z_t] * 2) if self.do_classifier_free_guidance else z_t
+        latent_model_input = self.pipe.scheduler.scale_model_input(latent_model_input, t)
+        
+        added_cond_kwargs = {"text_embeds": self.text_embeddings.add_text_embeds, "time_ids": self.text_embeddings.add_time_ids}
+                    
+        # Standard denoising step.
+        noise_pred = self.pipe.unet(
+            latent_model_input,
+            t,
+            encoder_hidden_states=self.text_embeddings.prompt_embeds,
+            added_cond_kwargs=added_cond_kwargs,
+            return_dict=False
+        )[0]
+        
+        # Classifier-free (text) guidance step.
+        if self.do_classifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + self.options.text_guidance_scale * (noise_pred_text - noise_pred_uncond)
+                        
+        step_output = self.pipe.scheduler.step(noise_pred, t, z_t, return_dict=True)
+        z_tm1 = step_output.prev_sample
+        z_0_hat = step_output.pred_original_sample
+        
+        if z_tm1.dtype != z_t.dtype:
+            z_tm1 = z_tm1.to(z_t.dtype)
+        if z_0_hat.dtype != z_t.dtype:
+            z_0_hat = z_0_hat.to(z_t.dtype)
+        return z_tm1, z_0_hat
     
     def image_to_object(
         self, 
@@ -264,6 +412,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             # TODO: allow magnitude to be also generated
             # TODO: phase wrapping
             phase = obj.angle()
+            # phase = self.preconditioned_phase_unwrap(obj)
             img = phase.unsqueeze(1)
             img = img.repeat(1, 3, 1, 1)
         else:
@@ -271,7 +420,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         img = img.to(self.pipe.dtype)
         return img
         
-    def calculate_physical_guidance_score(self, z_t: torch.Tensor):
+    def calculate_physical_guidance_score(self, z: torch.Tensor):
         """Denoise the latent code by one step, decode it, and calculate
         the score function of the physical model $f$, given by
         $\nabla_{z_{t-1}} || f(D(z_{t-1})) - y ||^2$,  where $D$ is the
@@ -279,19 +428,18 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         
         Parameters
         ----------
-        z_t: torch.Tensor
-            A (1, in_channels, h, w) tensor giving the latent code at 
-            timestep t.
+        z: torch.Tensor
+            A (1, in_channels, h, w) tensor giving the latent code.
             
         Returns
         -------
         torch.Tensor
             The score function of the physical model.
         """
-        if z_t.shape[0] != 1:
+        if z.shape[0] != 1:
             raise ValueError("The length of the batch dimension of z_t must be 1.")
         
-        decoded_image = self.decode_latent(z_t)
+        decoded_image = self.decode_latent(z)
         o_hat = self.image_to_object(decoded_image)
         
         with torch.no_grad():
@@ -311,6 +459,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
                 accumulated_grad += self.forward_model.object.get_grad() / len(input_data[0])
         
         accumulated_grad = self.object_to_image(accumulated_grad)
+        # accumulated_grad = self.parameter_group.object.preconditioner * accumulated_grad
         score = self.encode_image(accumulated_grad)
         return score
     
@@ -361,11 +510,9 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         ) = self.pipe.encode_prompt(
             prompt=prompt,
             prompt_2=None,
-            prompt_3=None,
             negative_prompt=negative_prompt,
             negative_prompt_2=None,
-            negative_prompt_3=None,
-            do_classifier_free_guidance=self._do_classifier_free_guidance,
+            do_classifier_free_guidance=self.do_classifier_free_guidance,
             prompt_embeds=None,
             negative_prompt_embeds=None,
             pooled_prompt_embeds=None,
@@ -373,17 +520,12 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             device=torch.get_default_device(),
             clip_skip=None,
             num_images_per_prompt=1,
-            max_sequence_length=256,
-            lora_scale=None,
         )
-        if self._do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-            pooled_prompt_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
             
-        self.text_embeddings["prompt_embeds"] = prompt_embeds
-        self.text_embeddings["negative_prompt_embeds"] = negative_prompt_embeds
-        self.text_embeddings["pooled_prompt_embeds"] = pooled_prompt_embeds
-        self.text_embeddings["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
+        self.text_embeddings.prompt_embeds = prompt_embeds
+        self.text_embeddings.negative_prompt_embeds = negative_prompt_embeds
+        self.text_embeddings.pooled_prompt_embeds = pooled_prompt_embeds
+        self.text_embeddings.negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
         
     def do_time_travel(self, i: int) -> bool:
         """Determine if time travel should be performed at timestep index `i`.
@@ -402,7 +544,61 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             i % self.options.time_travel_interval == 0 
             and i >= self.options.time_travel_steps
         )
+
+    def run_guided_sampling(self):
+        # Encode the prompt.
+        self.encode_prompt(self.options.prompt)
         
+        # Set timesteps.
+        self.pipe.scheduler.set_timesteps(
+            self.options.num_inference_steps, device=torch.get_default_device()
+        )
+        
+        # Get initial latent code.
+        z = self.prepare_initial_latent()
+        
+        self.prepare_added_time_ids_and_embeddings()
+        
+        for self.current_denoise_step, t in enumerate(self.pipe.scheduler.timesteps):            
+            z, z_0_hat = self.denoise_step(z, t)
+            
+            # Update the latent code with physical guidance.
+            if self.options.physical_guidance_scale > 0:
+                z = self.physical_guidance_step(z, z_0_hat)
+            
+            # Time-travel strategy
+            if self.do_time_travel(self.current_denoise_step):
+                # Jump back in time
+                z = self.noise_step(z, t, by=self.options.time_travel_steps)
+                
+                # Re-denoise with physics guidance
+                for j in range(self.options.time_travel_steps):
+                    z, z_0_hat_tt = self.denoise_step(z, t + self.options.time_travel_steps - j)
+                    if self.options.physical_guidance_scale > 0:
+                        z = self.physical_guidance_step(z, z_0_hat_tt)
+            
+            self.pbar.update(1)
+        
+        # Decode the final latents to image
+        self.sampled_image = self.decode_latent(z)
+        self.sampled_image_pil = self.pipe.image_processor.postprocess(self.sampled_image, output_type="pil")[0]
+        self.parameter_group.object.set_data(self.image_to_object(self.sampled_image))
+
+    def run(self, n_epochs: int = None):
+        n_epochs = self.options.num_epochs if n_epochs is None else n_epochs
+        with torch.no_grad():
+            for _ in range(n_epochs):
+                self.run_pre_epoch_hooks()
+                self.run_guided_sampling()
+
+
+class GuidedFlowMatchingReconstructor(GuidedDiffusionReconstructor):
+    """A reconstructor that works with flow matching generative models
+    (Stable Diffusion 3.5, etc.).
+    """
+    
+    pipe: StableDiffusion3Pipeline
+    
     def prepare_initial_latent(self) -> torch.Tensor:
         """Get the initial latent code. The size of the latent is determined
         by the pixel-space image size and the downscaling factor of the image
@@ -425,49 +621,154 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             num_channels_latents=self.pipe.transformer.config.in_channels,
             height=self.parameter_group.object.lateral_shape[0],
             width=self.parameter_group.object.lateral_shape[1],
-            dtype=self.text_embeddings["prompt_embeds"].dtype,
+            dtype=self.text_embeddings.prompt_embeds.dtype,
             device=torch.get_default_device(),
             generator=None,
             latents=None
         )
         return z
-
-    def run_guided_sampling(self):
-        # Encode the prompt.
-        self.encode_prompt(self.options.prompt)
+    
+    def encode_prompt(
+        self, 
+        prompt: str = None, 
+        negative_prompt: str = None
+    ):
+        """Encode the prompt into text embeddings and save them in
+        `self.text_embeddings`.
         
-        # Get initial latent code.
-        z = self.prepare_initial_latent()
-        
-        # Set timesteps.
-        self.pipe.scheduler.set_timesteps(self.options.num_inference_steps)
-        
-        for i, t in enumerate(self.pipe.scheduler.timesteps):
-            z, z_0_hat = self.denoise_step(z, t)
+        Parameters
+        ----------
+        prompt: str
+            The prompt to encode.
+        negative_prompt: str
+            The negative prompt to encode.
+        """
+        (
+            prompt_embeds,
+            negative_prompt_embeds,
+            pooled_prompt_embeds,
+            negative_pooled_prompt_embeds,
+        ) = self.pipe.encode_prompt(
+            prompt=prompt,
+            prompt_2=None,
+            prompt_3=None,
+            negative_prompt=negative_prompt,
+            negative_prompt_2=None,
+            negative_prompt_3=None,
+            do_classifier_free_guidance=self.do_classifier_free_guidance,
+            prompt_embeds=None,
+            negative_prompt_embeds=None,
+            pooled_prompt_embeds=None,
+            negative_pooled_prompt_embeds=None,
+            device=torch.get_default_device(),
+            clip_skip=None,
+            num_images_per_prompt=1,
+            max_sequence_length=256,
+            lora_scale=None,
+        )
+        if self.do_classifier_free_guidance:
+            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+            pooled_prompt_embeds = torch.cat([negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0)
             
-            # Update the latent code with physical guidance.
-            if self.options.physical_guidance_scale > 0:
-                z = self.physical_guidance_step(z, z_0_hat)
-            
-            # Time-travel strategy
-            if self.do_time_travel(i):
-                # Jump back in time
-                z = self.noise_step(z, t, by=self.options.time_travel_steps)
-                
-                # Re-denoise with physics guidance
-                for j in range(self.options.time_travel_steps):
-                    z, z_0_hat_tt = self.denoise_step(z, t + self.options.time_travel_steps - j)
-                    if self.options.physical_guidance_scale > 0:
-                        z = self.physical_guidance_step(z, z_0_hat_tt)
-            
-            self.pbar.update(1)
+        self.text_embeddings.prompt_embeds = prompt_embeds
+        self.text_embeddings.negative_prompt_embeds = negative_prompt_embeds
+        self.text_embeddings.pooled_prompt_embeds = pooled_prompt_embeds
+        self.text_embeddings.negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
         
-        # Decode the final latents to image
-        decoded_image = self.decode_latent(z)
-        self.sampled_image = self.pipe.image_processor.postprocess(decoded_image, output_type="pil")[0]
-
-    def run(self, n_epochs: int = None):
-        n_epochs = self.options.num_epochs if n_epochs is None else n_epochs
+    def decode_latent(self, z: torch.Tensor):
+        """Decode the latent code to the image space and convert it to
+        the structure compatible with the forward model.
+        
+        Parameters
+        ----------
+        z: torch.Tensor
+            The latent code to be decoded.
+            
+        Returns
+        -------
+        torch.Tensor
+            The decoded image in the structure compatible with the forward model.
+        """
+        z = z.to(self.pipe.vae.dtype)
+        z = z / self.pipe.vae.config.scaling_factor + self.pipe.vae.config.shift_factor
+        decoded_image = self.pipe.vae.decode(z, return_dict=False)[0]
+        return decoded_image
+    
+    def encode_image(self, img: torch.Tensor):
+        """Encode the image to the latent space.
+        
+        Parameters
+        ----------
+        img: torch.Tensor
+            The image to be encoded.
+            
+        Returns
+        -------
+        torch.Tensor
+            The encoded latent code.
+        """
+        img = img.to(self.pipe.vae.dtype)
+        z = self.pipe.vae.encode(img).latent_dist.sample()
+        z = (z - self.pipe.vae.config.shift_factor) * self.pipe.vae.config.scaling_factor
+        return z
+    
+    def denoise_step(self, z_t: torch.Tensor, t: int):
+        """Denoise the latent code by one step. Text conditioning is added
+        to the noise through classifier-free guidance.
+        The input is detached, so this function is not differentiable.
+        
+        Parameters
+        ----------
+        z_t: torch.Tensor
+            The latent code to be denoised.
+        t: int
+            The timestep to denoise at.
+            
+        Returns
+        -------
+        z_tm1: torch.Tensor
+            The denoised latent code (x_{t-1}).
+        z_0_hat: torch.Tensor
+            The estimated noise-free image at time step 0.
+        """
         with torch.no_grad():
-            for _ in range(n_epochs):
-                self.run_guided_sampling()
+            latent_model_input = torch.cat([z_t] * 2) if self.do_classifier_free_guidance else z_t
+            timestep = t.expand(latent_model_input.shape[0])
+            
+            # Standard denoising step.
+            noise_pred = self.pipe.transformer(
+                hidden_states=latent_model_input,
+                timestep=timestep,
+                encoder_hidden_states=self.text_embeddings.prompt_embeds,
+                pooled_projections=self.text_embeddings.pooled_prompt_embeds,
+                return_dict=False
+            )[0]
+            
+            # Classifier-free (text) guidance step.
+            if self.do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + self.options.text_guidance_scale * (noise_pred_text - noise_pred_uncond)
+            
+            step_output = self.pipe.scheduler.step(noise_pred, t, z_t, return_dict=True)
+            z_tm1 = step_output.prev_sample
+            if hasattr(step_output, "pred_original_sample"):
+                z_0_hat = step_output.pred_original_sample
+            else:
+                try:
+                    z_0_hat = self.estimate_t0_latent(z_tm1, t, noise_pred)
+                except AttributeError:
+                    logger.warning(
+                        f"Unable to estimate sample at t=0 with {self.pipe.scheduler.__class__.__name__}, "
+                        "so I am just using z_{t-1} as the estimate."
+                    )
+                    z_0_hat = z_tm1
+                    
+            
+            if z_tm1.dtype != z_t.dtype:
+                z_tm1 = z_tm1.to(z_t.dtype)
+            if z_0_hat.dtype != z_t.dtype:
+                z_0_hat = z_0_hat.to(z_t.dtype)
+        return z_tm1, z_0_hat
+
+    def prepare_added_time_ids_and_embeddings(self):
+        return

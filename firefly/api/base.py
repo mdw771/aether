@@ -26,7 +26,7 @@ class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.Autodiff
     time_travel_interval: int = 1
     """The interval at which to travel back in time."""
     
-    model_path: str = "stabilityai/stable-diffusion-3.5-medium"
+    model_path: str = "stabilityai/stable-diffusion-xl-base-1.0"
     """The path to the model to use for the guided sampling."""
     
     num_epochs: int = 1

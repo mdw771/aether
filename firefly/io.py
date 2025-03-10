@@ -2,9 +2,10 @@ import os
 import logging
 
 import torch
-from diffusers import StableDiffusion3Pipeline
+import diffusers
 
 import firefly
+import firefly.util as util
 
 
 logger = logging.getLogger(__name__)
@@ -78,23 +79,27 @@ class HuggingFaceStableDiffusionModelLoader(HuggingFaceModelLoader):
         }
         
     def load_local_model(self):
-        self.pipe = StableDiffusion3Pipeline.from_pretrained(
-            self.local_model_path,
-            **self.get_pipe_kwargs()
-        )
+        with util.ignore_default_device():
+            self.pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
+                self.local_model_path,
+                **self.get_pipe_kwargs()
+            )
         
     def download_model(self):
-        self.pipe = StableDiffusion3Pipeline.from_pretrained(
-            self.model_path,
-            **self.get_pipe_kwargs()
-        )
+        with util.ignore_default_device():
+            self.pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
+                self.model_path,
+                **self.get_pipe_kwargs()
+            )
 
     def save_model(self):
         self.pipe.save_pretrained(self.local_model_path)
 
 
 if __name__ == "__main__":
-    model_loader = HuggingFaceStableDiffusionModelLoader()
+    model_loader = HuggingFaceStableDiffusionModelLoader(
+        model_path="stabilityai/stable-diffusion-xl-base-1.0"
+    )
     model_loader.load()
     pipe = model_loader.pipe
 

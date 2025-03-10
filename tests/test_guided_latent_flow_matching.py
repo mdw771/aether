@@ -2,15 +2,14 @@ import argparse
 
 import torch
 import matplotlib.pyplot as plt
-
 import firefly.api as api
 
 import test_utils as tutils
 
 
-class TestGuidedLatentDiffusion(tutils.TungstenDataTester):
+class TestGuidedLatentFlowMatching(tutils.TungstenDataTester):
     
-    def test_guided_latent_diffusion(self):
+    def test_guided_latent_flow_matching(self):
         self.setup_ptychi(cpu_only=False)
 
         data, probe, pixel_size_m, positions_px = self.load_tungsten_data(pos_type='true')
@@ -26,12 +25,12 @@ class TestGuidedLatentDiffusion(tutils.TungstenDataTester):
         options.probe_position_options.position_x_px = positions_px[:, 1]
         options.probe_position_options.position_y_px = positions_px[:, 0]
 
+        options.reconstructor_options.model_path = "stabilityai/stable-diffusion-3.5-medium"
         options.reconstructor_options.num_inference_steps = 40
-        options.reconstructor_options.text_guidance_scale = 4.5
-        options.reconstructor_options.physical_guidance_scale = 0.05
+        options.reconstructor_options.text_guidance_scale = 15
+        options.reconstructor_options.physical_guidance_scale = 1e-1
         options.reconstructor_options.time_travel_interval = torch.inf
         options.reconstructor_options.prompt = "a binary pattern of intertwined lines"
-        options.reconstructor_options.model_path = "stabilityai/stable-diffusion-xl-base-1.0"
 
         task = api.GuidedDiffusionPtychographyTask(options)
         task.run()
@@ -46,6 +45,6 @@ if __name__ == '__main__':
     parser.add_argument('--generate-gold', action='store_true')
     args = parser.parse_args()
 
-    tester = TestGuidedLatentDiffusion()
+    tester = TestGuidedLatentFlowMatching()
     tester.setup_method(name="", generate_data=False, generate_gold=args.generate_gold, debug=True)
-    tester.test_guided_latent_diffusion()
+    tester.test_guided_latent_flow_matching()

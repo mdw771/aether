@@ -1,10 +1,15 @@
+import logging
+
 import torch
 from ptychi.api.task import PtychographyTask
 from ptychi.api.options.task import PtychographyTaskOptions
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 
-from firefly.reconstructor import GuidedDiffusionReconstructor
+from firefly.reconstructor import GuidedDiffusionReconstructor, GuidedFlowMatchingReconstructor
 import firefly.io as fio
+
+
+logger = logging.getLogger(__name__)
 
 
 class GuidedDiffusionPtychographyTask(PtychographyTask):
@@ -31,10 +36,19 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
             opr_mode_weights=self.opr_mode_weights,
         )
 
-        self.reconstructor = GuidedDiffusionReconstructor(
+        reconstructor_class = self.get_reconstructor_class()
+        logger.info(f"Using {reconstructor_class.__name__}.")
+        
+        self.reconstructor = reconstructor_class(
             parameter_group=par_group,
             dataset=self.dataset,
             model_loader=self.model_loader,
             options=self.reconstructor_options,
         )
         self.reconstructor.build()
+        
+    def get_reconstructor_class(self):
+        if "stable-diffusion-3" in self.reconstructor_options.model_path:
+            return GuidedFlowMatchingReconstructor
+        else:
+            return GuidedDiffusionReconstructor
