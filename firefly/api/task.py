@@ -4,6 +4,8 @@ import torch
 from ptychi.api.task import PtychographyTask
 from ptychi.api.options.task import PtychographyTaskOptions
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
+from ptychi.data_structures.object import PlanarObject
+from ptychi.utils import to_tensor
 
 from firefly.reconstructor import GuidedDiffusionReconstructor, GuidedFlowMatchingReconstructor
 import firefly.io as fio
@@ -21,6 +23,15 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
     def build(self):
         self.build_model_loader()
         super().build()
+        
+    def build_object(self):
+        data = to_tensor(self.object_options.initial_guess)
+        kwargs = {
+            "data": data,
+            "options": self.object_options,
+            "data_as_parameter": False
+        }
+        self.object = PlanarObject(**kwargs)
         
     def build_model_loader(self):
         self.model_loader = fio.HuggingFaceStableDiffusionModelLoader(

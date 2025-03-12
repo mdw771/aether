@@ -28,7 +28,7 @@ class TestGuidedLatentDiffusion(tutils.TungstenDataTester):
 
         options.reconstructor_options.num_inference_steps = 40
         options.reconstructor_options.text_guidance_scale = 4.5
-        options.reconstructor_options.physical_guidance_scale = 0.05
+        options.reconstructor_options.physical_guidance_scale = 10
         options.reconstructor_options.time_travel_interval = torch.inf
         options.reconstructor_options.prompt = "a binary pattern of intertwined lines"
         options.reconstructor_options.model_path = "stabilityai/stable-diffusion-xl-base-1.0"

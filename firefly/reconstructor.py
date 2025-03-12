@@ -10,6 +10,7 @@ from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 import ptychi.maps as maps
 from ptychi.io_handles import PtychographyDataset
 import ptychi.image_proc as ip
+import firefly.maths as maths
 
 import firefly.api as api
 from firefly.io import HuggingFaceStableDiffusionModelLoader
@@ -61,6 +62,15 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
     def build_pipe(self):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
+        
+        # Backprop runs into issue when the VAE is float16. This is because
+        # the VAE needs to be upcasted to float32 to avoid overflow, and accordingly
+        # the latent needs to be upcasted to float32 before decoding, downcasted to
+        # float16 after decoding, and then casted to float32 for the forward model.
+        # PyTorch doesn't keep track of the type cast, so during backprop the float32
+        # gradient will be fed to the float16 VAE, causing a TypeError. Therefore,
+        # we keep everything in float32.
+        self.pipe = self.pipe.to(torch.float32)        
         
     def build_counter(self):
         super().build_counter()
@@ -223,7 +233,8 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
 
         # cast back to fp16 if needed
         if needs_upcasting:
-            self.pipe.vae.to(dtype=torch.float16)
+            self.pipe.vae = maths.TypeCastFunction.apply(self.pipe.vae, self.pipe.dtype)
+            image = maths.TypeCastFunction.apply(image, self.pipe.dtype)
         return image
     
     def encode_image(self, img: torch.Tensor):
@@ -265,8 +276,8 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
 
         # cast back to fp16 if needed
         if needs_upcasting:
-            self.pipe.vae.to(dtype=torch.float16)
-            z = z.to(torch.float16)
+            self.pipe.vae.to(self.pipe.dtype)
+            z = z.to(self.pipe.dtype)
         return z
     
     def prepare_added_time_ids_and_embeddings(self):
@@ -382,13 +393,13 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             obj = mag * torch.exp(1j * phase)
         else:
             raise ValueError(f"Invalid representation: {representation}")
-        obj = obj.to(torch.complex64)
+        obj = maths.TypeCastFunction.apply(obj, torch.complex64)
         return obj
     
     def object_to_image(
         self, 
         obj: torch.Tensor, 
-        representation: Literal["real_imag", "mag_phase"] = "mag_phase"
+        representation: Literal["real_imag", "mag_phase", "single_channel"] = "mag_phase"
     ) -> torch.Tensor:
         """Convert a complex object tensor to an image assumed by the encoder.
         
@@ -409,16 +420,35 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
                 0.5 * obj.real + 0.5 * obj.imag
             ], dim=1)
         elif representation == "mag_phase":
-            # TODO: allow magnitude to be also generated
-            # TODO: phase wrapping
             phase = obj.angle()
             # phase = self.preconditioned_phase_unwrap(obj)
             img = phase.unsqueeze(1)
+            img = img.repeat(1, 3, 1, 1)
+        elif representation == "single_channel":
+            if obj.dtype.is_complex:
+                raise ValueError("Single channel representation does not support complex numbers.")
+            img = obj.unsqueeze(1)
             img = img.repeat(1, 3, 1, 1)
         else:
             raise ValueError(f"Invalid representation: {representation}")
         img = img.to(self.pipe.dtype)
         return img
+    
+    def set_object_data_to_forward_model(self, o_hat: torch.Tensor):
+        """Set object data to the object function object in the forward model. 
+        We can't use object.set_data() here because it is an in-place operation
+        that will break the gradient.
+        """
+        if isinstance(self.forward_model.object.tensor.data, torch.nn.Parameter):
+            raise TypeError(
+                "The tensor in the ComplexTensor of the object should not "
+                "be a torch.nn.Parameter. When creating the object, set "
+                "`data_as_parameter=False`."
+            )
+        self.forward_model.object.tensor.data = torch.stack([o_hat.real, o_hat.imag], dim=-1)
+        
+    def initialize_gradients(self, z: torch.Tensor):
+        z.grad = None
         
     def calculate_physical_guidance_score(self, z: torch.Tensor):
         """Denoise the latent code by one step, decode it, and calculate
@@ -439,29 +469,24 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         if z.shape[0] != 1:
             raise ValueError("The length of the batch dimension of z_t must be 1.")
         
-        decoded_image = self.decode_latent(z)
-        o_hat = self.image_to_object(decoded_image)
-        
-        with torch.no_grad():
-            # TODO: convert z_t to the correct format.
-            self.forward_model.object.set_data(o_hat)
-        
-        accumulated_grad = torch.zeros_like(o_hat)
+        accumulated_grad_phase = torch.zeros_like(z)
         with torch.enable_grad():
+            z = z.requires_grad_(True)
+            
+            decoded_image = self.decode_latent(z)
+            o_hat = self.image_to_object(decoded_image)
+            self.set_object_data_to_forward_model(o_hat)
+            
             for batch_data in self.dataloader:
-                self.forward_model.object.initialize_grad()
+                self.initialize_gradients(z)
                 input_data, y_true = self.prepare_batch_data(batch_data)
                 y_pred = self.forward_model(*input_data)
                 batch_loss = self.loss_function(
                     y_pred[:, self.dataset.valid_pixel_mask], y_true[:, self.dataset.valid_pixel_mask]
                 )
-                batch_loss.backward()
-                accumulated_grad += self.forward_model.object.get_grad() / len(input_data[0])
-        
-        accumulated_grad = self.object_to_image(accumulated_grad)
-        # accumulated_grad = self.parameter_group.object.preconditioner * accumulated_grad
-        score = self.encode_image(accumulated_grad)
-        return score
+                batch_loss.backward(retain_graph=True)
+                accumulated_grad_phase += z.grad * y_pred.numel()
+        return accumulated_grad_phase / self.dataset.patterns.numel()
     
     def estimate_t0_latent(
         self, z_t: torch.Tensor, t: torch.Tensor, noise_pred: torch.Tensor
