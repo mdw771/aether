@@ -64,7 +64,11 @@ class BaseTester:
             self.high_tol = False
             self.action = action
             self.save_timing = False
-    
+        
+        self.atol = 1e-3
+        self.rtol = 1e-2 if self.high_tol else 1e-4
+        self.trigger_on_mean_abs_diff = False
+        
     @pytest.fixture(autouse=True)
     def inject_config(self, pytestconfig):
         self.pytestconfig = pytestconfig
@@ -80,9 +84,9 @@ class BaseTester:
     @staticmethod
     def get_ci_data_dir():
         try:
-            dir = os.environ['PTYCHO_CI_DATA_DIR']
+            dir = os.environ['FIREFLY_CI_DATA_DIR']
         except KeyError:
-            raise KeyError('PTYCHO_CI_DATA_DIR not set. Please set it to the path to the data folder.')
+            raise KeyError('FIREFLY_CI_DATA_DIR not set. Please set it to the path to the data folder.')
         return dir
 
     def get_ci_input_data_dir(self):
@@ -148,11 +152,11 @@ class BaseTester:
         fname = os.path.join(self.get_ci_gold_data_dir(), name, 'recon.npy')
         return np.load(fname)
     
-    def run_comparison(self, name, test_data, high_tol=False):
+    def run_comparison(self, name, test_data, atol=None, rtol=None):
         gold_data = self.load_gold_data(name)
-        atol = 1e-3
-        rtol = 1e-2 if high_tol else 1e-4
-        compare_data(test_data, gold_data, atol=atol, rtol=rtol, name=name)
+        atol = self.atol if atol is None else atol
+        rtol = self.rtol if rtol is None else rtol
+        compare_data(test_data, gold_data, atol=atol, rtol=rtol, name=name, trigger_on_mean_abs_diff=self.trigger_on_mean_abs_diff)
         return
     
     def get_default_input_data_file_paths(self, name):
@@ -242,15 +246,21 @@ def get_timestamp():
     return datetime.datetime.now().strftime('%Y%m%d%H%M')
 
 
-def compare_data(test_data, gold_data, atol=1e-7, rtol=1e-7, name=""):
+def compare_data(test_data, gold_data, atol=1e-7, rtol=1e-7, trigger_on_mean_abs_diff=False, name=""):
     if not np.allclose(gold_data.shape, test_data.shape):
         print('{} FAILED [SHAPE MISMATCH]'.format(name))
         print('  Gold shape: {}'.format(gold_data.shape))
         print('  Test shape: {}'.format(test_data.shape))
         raise AssertionError
-    if not np.allclose(gold_data, test_data, atol=atol, rtol=rtol):
+    
+    abs_diff = np.abs(gold_data - test_data)
+    if trigger_on_mean_abs_diff:
+        if abs_diff.mean() > atol + rtol * np.abs(gold_data).mean():
+            print('{} FAILED [MISMATCH]'.format(name))
+            print('  Mean abs diff: {}'.format(abs_diff.mean()))
+            raise AssertionError
+    elif not np.allclose(gold_data, test_data, atol=atol, rtol=rtol):
         print('{} FAILED [MISMATCH]'.format(name))
-        abs_diff = np.abs(gold_data - test_data)
         loc_max_diff = np.unravel_index(np.argmax(abs_diff), abs_diff.shape)
         loc_max_diff = [a.item() for a in loc_max_diff]
         print('  Mean abs diff: {}'.format(abs_diff.mean()))
@@ -295,3 +305,13 @@ def plot_probe_positions(pos, pos_true=None):
 
 def get_timing_data_dir():
     return os.path.join(BaseTester.get_ci_data_dir(), "timing")
+
+
+def get_indices_to_keep_for_downsampling(
+    n_total: int, 
+    n_keep: int, 
+    seed: int = 123
+) -> np.ndarray[int]:
+    np.random.seed(seed)
+    return np.random.choice(n_total, size=n_keep, replace=False)
+

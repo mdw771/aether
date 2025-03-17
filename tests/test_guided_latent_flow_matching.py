@@ -1,4 +1,5 @@
 import argparse
+import pytest
 
 import torch
 import matplotlib.pyplot as plt
@@ -9,6 +10,7 @@ import test_utils as tutils
 
 class TestGuidedLatentFlowMatching(tutils.TungstenDataTester):
     
+    @pytest.mark.local()
     def test_guided_latent_flow_matching(self):
         self.setup_ptychi(cpu_only=False)
 
