@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Optional
 import logging
 
 from PIL import Image
@@ -145,37 +145,48 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         )
         return z
         
-    def noise_step(self, z_t: torch.Tensor, t: int, by: int):
-        """Add noise to the latent code.
+    def noise_step(self, z_t: torch.Tensor, t: float, by: int):
+        """Add noise to the latent code at timestep t for given timesteps.
+        
+        With the noisy image at timestep t given by
+        ```
+        x_t = \sqrt{alpha_prod_t} x_0 + \sqrt{1 - alpha_prod_t} \epsilon
+        ```
+        One can find the relation between two images at different timesteps,
+        t1 and t2, by eliminating x_0. 
         
         Parameters
         ----------
         z_t: torch.Tensor
             The latent code to be denoised.
-        t: int
-            The timestep to denoise at.
+        t: float
+            The current timestep.
         by: int
-            The number of steps to add noise by.
+            The number of inference steps to add noise by.
             
         Returns
         -------
         torch.Tensor
             The latent code after adding noise.
         """
-        # Get the noise schedule for the current timestep
-        alpha_prod_t = self.pipe.scheduler.alphas_cumprod[t]
-        alpha_prod_t_prev = (
-            self.pipe.scheduler.alphas_cumprod[t + by] 
-            if t + by < len(self.pipe.scheduler.alphas_cumprod) 
-            else torch.tensor(0.0)
-        )
+        t = int(t)
+        ind_t = torch.where(self.pipe.scheduler.timesteps == t)[0][0]
+        
+        # `self.pipe.scheduler.timesteps` is in reverse order (front = noisier).
+        if ind_t - by < 0:
+            raise ValueError("The number of steps to add noise is out of bounds.")
+        
+        # `alphas_cumprod` has a length of 1000, not the number of inference steps.
+        alpha_prod_t1 = self.pipe.scheduler.alphas_cumprod[t]
+        t2 = int(self.pipe.scheduler.timesteps[ind_t - by])
+        alpha_prod_t2 = self.pipe.scheduler.alphas_cumprod[t2]
         
         # Sample random noise
         noise = torch.randn_like(z_t)
         
         # Calculate the noisy sample x_{t+n} from z_t using the noise schedule
-        z_t_plus_n = torch.sqrt(alpha_prod_t_prev / alpha_prod_t) * z_t + \
-                     torch.sqrt(1 - alpha_prod_t_prev / alpha_prod_t) * noise
+        z_t_plus_n = torch.sqrt(alpha_prod_t2 / alpha_prod_t1) * z_t + \
+                     torch.sqrt(1 - alpha_prod_t2 / alpha_prod_t1) * noise
         
         return z_t_plus_n
     
@@ -315,7 +326,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         self.text_embeddings.negative_add_time_ids = negative_add_time_ids
         self.text_embeddings.add_text_embeds = add_text_embeds
     
-    def denoise_step(self, z_t: torch.Tensor, t: int):
+    def denoise_step(self, z_t: torch.Tensor, t: int, step_index: Optional[int] = None):
         """Denoise the latent code by one step. Text conditioning is added
         to the noise through classifier-free guidance.
         The input is detached, so this function is not differentiable.
@@ -326,6 +337,9 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             The latent code to be denoised.
         t: int
             The timestep to denoise at.
+        step_index: int
+            The index of the current denoising step. It will be used to override
+            the `step_index` attribute of the scheduler.
             
         Returns
         -------
@@ -352,7 +366,10 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         if self.do_classifier_free_guidance:
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + self.options.text_guidance_scale * (noise_pred_text - noise_pred_uncond)
-                        
+        
+        if step_index is not None:
+            self.pipe.scheduler._step_index = step_index
+        
         step_output = self.pipe.scheduler.step(noise_pred, t, z_t, return_dict=True)
         z_tm1 = step_output.prev_sample
         z_0_hat = step_output.pred_original_sample
@@ -568,6 +585,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         return (
             i % self.options.time_travel_interval == 0 
             and i >= self.options.time_travel_steps
+            and i < len(self.pipe.scheduler.timesteps) - 1
         )
 
     def run_guided_sampling(self):
@@ -584,8 +602,8 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         
         self.prepare_added_time_ids_and_embeddings()
         
-        for self.current_denoise_step, t in enumerate(self.pipe.scheduler.timesteps):            
-            z, z_0_hat = self.denoise_step(z, t)
+        for self.current_denoise_step, t in enumerate(self.pipe.scheduler.timesteps):   
+            z, z_0_hat = self.denoise_step(z, t, step_index=self.current_denoise_step)
             
             # Update the latent code with physical guidance.
             if self.options.physical_guidance_scale > 0:
@@ -593,12 +611,22 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             
             # Time-travel strategy
             if self.do_time_travel(self.current_denoise_step):
-                # Jump back in time
-                z = self.noise_step(z, t, by=self.options.time_travel_steps)
+                # Jump back in time. `self.pipe.scheduler.timesteps` is in reverse order,
+                # so we add 1 to the index to get the current timestep (it is already denoised,
+                # so it is at t - 1)
+                z = self.noise_step(
+                    z, 
+                    self.pipe.scheduler.timesteps[self.current_denoise_step + 1], 
+                    by=self.options.time_travel_steps
+                )
                 
                 # Re-denoise with physics guidance
                 for j in range(self.options.time_travel_steps):
-                    z, z_0_hat_tt = self.denoise_step(z, t + self.options.time_travel_steps - j)
+                    z, z_0_hat_tt = self.denoise_step(
+                        z, 
+                        self.pipe.scheduler.timesteps[self.current_denoise_step + 1 - self.options.time_travel_steps + j],
+                        step_index=self.current_denoise_step + 1 - self.options.time_travel_steps + j
+                    )
                     if self.options.physical_guidance_scale > 0:
                         z = self.physical_guidance_step(z, z_0_hat_tt)
             
@@ -737,7 +765,7 @@ class GuidedFlowMatchingReconstructor(GuidedDiffusionReconstructor):
         z = (z - self.pipe.vae.config.shift_factor) * self.pipe.vae.config.scaling_factor
         return z
     
-    def denoise_step(self, z_t: torch.Tensor, t: int):
+    def denoise_step(self, z_t: torch.Tensor, t: float):
         """Denoise the latent code by one step. Text conditioning is added
         to the noise through classifier-free guidance.
         The input is detached, so this function is not differentiable.
@@ -746,7 +774,7 @@ class GuidedFlowMatchingReconstructor(GuidedDiffusionReconstructor):
         ----------
         z_t: torch.Tensor
             The latent code to be denoised.
-        t: int
+        t: float
             The timestep to denoise at.
             
         Returns
