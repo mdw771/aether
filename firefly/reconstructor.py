@@ -502,7 +502,10 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
                     y_pred[:, self.dataset.valid_pixel_mask], y_true[:, self.dataset.valid_pixel_mask]
                 )
                 batch_loss.backward(retain_graph=True)
+                self.step_all_optimizers()
                 accumulated_grad_phase += z.grad * y_pred.numel()
+                self.forward_model.zero_grad()
+                
         return accumulated_grad_phase / self.dataset.patterns.numel()
     
     def estimate_t0_latent(

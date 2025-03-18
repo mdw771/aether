@@ -32,6 +32,7 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
             "data_as_parameter": False
         }
         self.object = PlanarObject(**kwargs)
+        self.object.optimizable = False
         
     def build_model_loader(self):
         self.model_loader = fio.HuggingFaceStableDiffusionModelLoader(
