@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 
 import ptychi.api as pcapi
+import firefly.api.enums as enums
 
 
 @dataclass
@@ -29,6 +30,8 @@ class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.Autodiff
     model_path: str = "stabilityai/stable-diffusion-xl-base-1.0"
     """The path to the model to use for the guided sampling."""
     
+    noise_scheduler: enums.NoiseSchedulers = enums.NoiseSchedulers.DDPMScheduler
+    """The noise scheduler to use for the guided sampling."""
     num_epochs: int = 1
     """The number of epochs. An epoch here refers to one generation pass, which
     may be multiple steps of the guided sampling. Usually 1 is enough, but it can

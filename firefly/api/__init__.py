@@ -7,3 +7,4 @@ from .base import (
     GuidedDiffusionOPRModeWeightsOptions,
 )
 from .task import GuidedDiffusionPtychographyTask
+import firefly.api.enums

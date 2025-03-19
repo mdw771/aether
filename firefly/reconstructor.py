@@ -4,16 +4,17 @@ import logging
 from PIL import Image
 import torch
 from diffusers import StableDiffusion3Pipeline, StableDiffusionXLPipeline
-import diffusers.utils as dutils
 from ptychi.reconstructors.ad_ptychography import AutodiffPtychographyReconstructor
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
-import ptychi.maps as maps
+import ptychi.maps as pcmaps
 from ptychi.io_handles import PtychographyDataset
 import ptychi.image_proc as ip
-import firefly.maths as maths
 
+import firefly.maths as maths
 import firefly.api as api
 from firefly.io import HuggingFaceStableDiffusionModelLoader
+import firefly.maps as maps
+import firefly.util as util
 
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         
         self.model_loader = model_loader
         self.pipe: StableDiffusionXLPipeline = None
-        self.loss_function = maps.get_loss_function_by_enum(options.loss_function)()
+        self.loss_function = pcmaps.get_loss_function_by_enum(options.loss_function)()
         self.forward_model = None
         
         self.current_denoise_step = 0
@@ -60,8 +61,20 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         super().build()
         
     def build_pipe(self):
+        # Load pipe to CPU.
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
+        
+        # Change scheduler.
+        with util.ignore_default_device():
+            self.pipe.scheduler = maps.get_noise_scheduler(
+                self.options.noise_scheduler
+            ).from_config(self.pipe.scheduler.config)
+        
+        # Set timesteps.
+        self.pipe.scheduler.set_timesteps(
+            self.options.num_inference_steps, device=torch.device("cpu")
+        )
         
         # VAE requires float32 to prevent overflow. 
         # `self.decode_latent` and `self.encode_image` contain upcasting, but they
@@ -595,11 +608,6 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
     def run_guided_sampling(self):
         # Encode the prompt.
         self.encode_prompt(self.options.prompt)
-        
-        # Set timesteps.
-        self.pipe.scheduler.set_timesteps(
-            self.options.num_inference_steps, device=torch.get_default_device()
-        )
         
         # Get initial latent code.
         z = self.prepare_initial_latent()
