@@ -218,6 +218,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         z_0_hat = z_0_hat.to(torch.float32)
         z_t = z_t.to(torch.float32)
         score = self.calculate_physical_guidance_score(z_0_hat)
+        score = self.remove_score_function_outliers(score)
         z_t = z_t - self.options.physical_guidance_scale * score
         return z_t.to(self.pipe.unet.dtype)
         
@@ -522,8 +523,28 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
                 self.step_all_optimizers()
                 accumulated_grad_phase += z.grad * y_pred.numel()
                 self.forward_model.zero_grad()
-                
-        return accumulated_grad_phase / self.dataset.patterns.numel()
+        
+        accumulated_grad_phase = accumulated_grad_phase / self.dataset.patterns.numel()
+        return accumulated_grad_phase
+    
+    def remove_score_function_outliers(self, score: torch.Tensor):
+        """Remove outliers from the score function.
+        
+        Parameters
+        ----------
+        score: torch.Tensor
+            A (1, c, h, w) tensor giving the score function.
+            
+        Returns
+        -------
+        torch.Tensor
+            The processed score function.
+        """
+        for c in range(score.shape[1]):
+            abs_score_channel = score[:, c, ...].abs()
+            q = torch.quantile(abs_score_channel, 0.99)
+            score[:, c, ...] = score[:, c, ...] * (abs_score_channel < q)
+        return score
     
     def estimate_t0_latent(
         self, z_t: torch.Tensor, t: torch.Tensor, noise_pred: torch.Tensor
