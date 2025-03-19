@@ -84,6 +84,9 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         # automatic differentiation graph of physical guidance.
         self.pipe.vae = self.pipe.vae.to(torch.float32)
         
+        # Move pipe to GPU.
+        self.pipe = self.pipe.to("cuda")
+        
     def build_counter(self):
         super().build_counter()
         self.pbar.total = self.options.num_inference_steps

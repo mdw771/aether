@@ -70,7 +70,7 @@ class HuggingFaceStableDiffusionModelLoader(HuggingFaceModelLoader):
         super().load()
         
         self.pipe = self.pipe.to(self.device)
-        self.pipe.enable_model_cpu_offload()
+        # self.pipe.enable_model_cpu_offload()
         
     def get_pipe_kwargs(self):
         return {
