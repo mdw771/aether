@@ -63,14 +63,13 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
         
-        # Backprop runs into issue when the VAE is float16. This is because
-        # the VAE needs to be upcasted to float32 to avoid overflow, and accordingly
-        # the latent needs to be upcasted to float32 before decoding, downcasted to
-        # float16 after decoding, and then casted to float32 for the forward model.
-        # PyTorch doesn't keep track of the type cast, so during backprop the float32
-        # gradient will be fed to the float16 VAE, causing a TypeError. Therefore,
-        # we keep everything in float32.
-        self.pipe = self.pipe.to(torch.float32)        
+        # VAE requires float32 to prevent overflow. 
+        # `self.decode_latent` and `self.encode_image` contain upcasting, but they
+        # run into issues during backprop when the decoded image is casted to float32
+        # prior to the physics forward model. Thus, we avoid the upcasting by converting
+        # the VAE to float32 beforehand, and casting the latent to float32 before the
+        # automatic differentiation graph of physical guidance.
+        self.pipe.vae = self.pipe.vae.to(torch.float32)
         
     def build_counter(self):
         super().build_counter()
@@ -200,9 +199,11 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         z_0_hat: torch.Tensor
             The estimated noise-free image at time step 0.
         """
+        z_0_hat = z_0_hat.to(torch.float32)
+        z_t = z_t.to(torch.float32)
         score = self.calculate_physical_guidance_score(z_0_hat)
         z_t = z_t - self.options.physical_guidance_scale * score
-        return z_t
+        return z_t.to(self.pipe.unet.dtype)
         
     def decode_latent(self, z: torch.Tensor):
         """Decode the latent code to the image space and convert it to
@@ -636,7 +637,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             self.pbar.update(1)
         
         # Decode the final latents to image
-        self.sampled_image = self.decode_latent(z)
+        self.sampled_image = self.decode_latent(z.to(self.pipe.vae.dtype))
         self.sampled_image_pil = self.pipe.image_processor.postprocess(self.sampled_image, output_type="pil")[0]
         self.parameter_group.object.set_data(self.image_to_object(self.sampled_image))
 
