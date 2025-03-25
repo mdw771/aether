@@ -792,10 +792,12 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         """
         if self.options.physical_guidance_scale <= 0:
             return False
-        if self.options.physical_guidance_interval == 1:
-            return True
         else:
-            if i > 0 and i < len(self.pipe.scheduler.timesteps) - 1 and i % self.options.physical_guidance_interval == 0:
+            if (
+                (i > 0 or self.options.physical_guidance_interval == 1)
+                and i < len(self.pipe.scheduler.timesteps) - 1 
+                and i % self.options.physical_guidance_interval == 0
+            ):
                 return True
             else:
                 return False
