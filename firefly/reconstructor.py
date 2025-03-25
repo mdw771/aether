@@ -1,6 +1,7 @@
 from typing import Literal, Optional
 import logging
 
+import numpy as np
 from PIL import Image
 import torch
 from diffusers import StableDiffusion3Pipeline, StableDiffusionXLPipeline
@@ -43,6 +44,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         *args, **kwargs
     ):
         super().__init__(parameter_group, dataset=dataset, options=options, *args, **kwargs)
+        self.check_inputs()
         
         self.model_loader = model_loader
         self.pipe: StableDiffusionXLPipeline = None
@@ -55,6 +57,11 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         
         self.sampled_image: torch.Tensor = None
         self.sampled_image_pil: Image.Image = None
+                
+    def check_inputs(self):
+        super().check_inputs()
+        if self.parameter_group.object.optimizable:
+            raise ValueError("The object must not be optimizable for physics-guided sampling.")
         
     def build(self):
         self.build_pipe()
@@ -100,6 +107,47 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         self.forward_model = self.forward_model_class(
             self.parameter_group, **self.forward_model_params
         )
+        
+    def get_denoising_step_from_timestep(self, t: int):
+        """Get the denoising step from the timestep.
+        
+        Parameters
+        ----------
+        t: int
+            The timestep in `self.pipe.scheduler.timesteps`.
+            
+        Returns
+        -------
+        int
+            The timestep in `self.pipe.scheduler.timesteps`.
+        """
+        return torch.where(self.pipe.scheduler.timesteps == t)[0][0]
+            
+    def get_alpha_prod_t(self, *, t: Optional[int] = None, denoising_step: Optional[int] = None):
+        """Get the cumulative alpha product at a specific timestep or
+        denoising step.
+        
+        Parameters
+        ----------
+        t: int
+            The timestep in `self.pipe.scheduler.timesteps`.
+        denoising_step: int
+            The index of the denoising step, starting from 0 during
+            inference.
+            
+        Returns
+        -------
+        float
+            The cumulative alpha product at the given timestep or denoising step.
+        """
+        if t is not None and denoising_step is not None:
+            raise ValueError("Either t or denoising_step must be provided, not both.")
+        if t is None and denoising_step is None:
+            raise ValueError("Either t or denoising_step must be provided.")
+        if denoising_step is not None:
+            t = self.pipe.scheduler.timesteps[denoising_step]
+        ind = int(t)
+        return self.pipe.scheduler.alphas_cumprod[ind]
         
     def preconditioned_phase_unwrap(self, obj: torch.Tensor) -> torch.Tensor:
         """Phase unwrapping with preconditioning. The constant phase offset
@@ -184,17 +232,15 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         torch.Tensor
             The latent code after adding noise.
         """
-        t = int(t)
-        ind_t = torch.where(self.pipe.scheduler.timesteps == t)[0][0]
+        ind_t = self.get_denoising_step_from_timestep(t)
         
         # `self.pipe.scheduler.timesteps` is in reverse order (front = noisier).
         if ind_t - by < 0:
             raise ValueError("The number of steps to add noise is out of bounds.")
         
         # `alphas_cumprod` has a length of 1000, not the number of inference steps.
-        alpha_prod_t1 = self.pipe.scheduler.alphas_cumprod[t]
-        t2 = int(self.pipe.scheduler.timesteps[ind_t - by])
-        alpha_prod_t2 = self.pipe.scheduler.alphas_cumprod[t2]
+        alpha_prod_t1 = self.get_alpha_prod_t(denoising_step=ind_t)
+        alpha_prod_t2 = self.get_alpha_prod_t(denoising_step=ind_t - by)
         
         # Sample random noise
         noise = torch.randn_like(z_t)
@@ -217,9 +263,15 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         """
         z_0_hat = z_0_hat.to(torch.float32)
         z_t = z_t.to(torch.float32)
-        score = self.calculate_physical_guidance_score(z_0_hat)
-        score = self.remove_score_function_outliers(score)
-        z_t = z_t - self.options.physical_guidance_scale * score
+        if self.options.physical_guidance_method == api.enums.PhysicalGuidanceMethods.SCORE:
+            score = self.calculate_physical_guidance_score(z_0_hat)
+            score = self.remove_score_function_outliers(score)
+            z_t = z_t - self.options.physical_guidance_scale * score
+        elif self.options.physical_guidance_method == api.enums.PhysicalGuidanceMethods.RESAMPLE:
+            z_0_hat = self.calculate_physical_guidance_optimal_z(z_0_hat)
+            z_t = self.stochastic_resample(self.current_denoise_step + 1, z_0_hat, z_t)
+        else:
+            raise ValueError(f"Invalid physical guidance method: {self.options.physical_guidance_method}")
         return z_t.to(self.pipe.unet.dtype)
         
     def decode_latent(self, z: torch.Tensor):
@@ -546,6 +598,102 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             score[:, c, ...] = score[:, c, ...] * (abs_score_channel < q)
         return score
     
+    def calculate_physical_guidance_optimal_z(self, z: torch.Tensor):
+        """Compute the optimal latent code that minimizes the physical loss.
+        
+        Parameters
+        ----------
+        z: torch.Tensor
+            The estimated latent at time step 0.
+            
+        Returns
+        -------
+        torch.Tensor
+            The resampled latent code.
+        """
+        if z.shape[0] != 1:
+            raise ValueError("The length of the batch dimension of z_t must be 1.")
+        
+        z_optimizer = pcmaps.get_optimizer_by_enum(
+            self.options.resample_options.optimizer
+        )(
+            [z], lr=self.options.resample_options.step_size
+        )
+        
+        with torch.enable_grad():
+            z = z.requires_grad_(True)
+            for i in range(self.options.resample_options.num_z_optimization_epochs):
+                epoch_loss = 0
+                for batch_data in self.dataloader:
+                    decoded_image = self.decode_latent(z)
+                    o_hat = self.image_to_object(decoded_image)
+                    self.set_object_data_to_forward_model(o_hat)
+                    
+                    input_data, y_true = self.prepare_batch_data(batch_data)
+                    y_pred = self.forward_model(*input_data)
+                    batch_loss = self.loss_function(
+                        y_pred[:, self.dataset.valid_pixel_mask], y_true[:, self.dataset.valid_pixel_mask]
+                    )
+                    batch_loss.backward(retain_graph=True)
+                    z_optimizer.step()
+                    self.step_all_optimizers()
+                    self.forward_model.zero_grad()
+                    epoch_loss += batch_loss.item()
+                logger.info(f"z-optimization epoch {i} loss: {epoch_loss / len(self.dataloader)}")
+        
+        z = z.detach()
+        return z
+    
+    def stochastic_resample(self, denoising_step: int, z_0_hat: torch.Tensor, z_t_prime: torch.Tensor):
+        """Stochastically resample the latent code.
+        
+        Parameters
+        ----------
+        denoising_step: int
+            The index of the current denoising step.
+        z_0_hat: torch.Tensor
+            The estimated latent at time step 0.
+        z_t_prime: torch.Tensor
+            The unconditionally denoised latent at time step t.
+            
+        Returns
+        -------
+        torch.Tensor
+            The resampled latent code.
+        """
+        sigma_t_sq = self.get_sigma_t_sq(denoising_step)
+        alpha_prod_t = self.get_alpha_prod_t(denoising_step=denoising_step)
+        z = sigma_t_sq * np.sqrt(alpha_prod_t) * z_0_hat + (1 - alpha_prod_t) * z_t_prime
+        z = z / (sigma_t_sq + (1 - alpha_prod_t))
+        if denoising_step < len(self.pipe.scheduler.timesteps) - 1:
+            n = torch.randn_like(z)
+            z = z + np.sqrt(sigma_t_sq * (1 - alpha_prod_t) / (sigma_t_sq + (1 - alpha_prod_t))) * n
+        return z
+        
+    def get_sigma_t_sq(self, denoising_step: int):
+        """Get $\sigma_t^2$ for ReSample.
+        
+        Parameters
+        ----------
+        denoising_step: int
+            The index of the current timestep.
+            
+        Returns
+        -------
+        torch.Tensor
+            The $\sigma_t^2$ for ReSample.
+        """
+        alpha_prod_t = self.get_alpha_prod_t(denoising_step=denoising_step)
+        alpha_prod_t_prev = (
+            self.get_alpha_prod_t(denoising_step=denoising_step + 1) 
+            if denoising_step < len(self.pipe.scheduler.timesteps) - 1 
+            else 1
+        )
+        sigma_t_sq = self.options.resample_options.gamma * \
+            (1 - alpha_prod_t_prev) / alpha_prod_t * \
+            (1 - alpha_prod_t / alpha_prod_t_prev)
+        return sigma_t_sq
+    
     def estimate_t0_latent(
         self, z_t: torch.Tensor, t: torch.Tensor, noise_pred: torch.Tensor
     ):
@@ -565,7 +713,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         torch.Tensor
             The estimated latent at time step 0.
         """
-        alpha_prod_t = self.pipe.scheduler.alphas_cumprod[t]
+        alpha_prod_t = self.get_alpha_prod_t(t=t)
         z_0_hat = z_t / torch.sqrt(alpha_prod_t) - \
                   torch.sqrt(1 - alpha_prod_t) / torch.sqrt(alpha_prod_t) * noise_pred
         return z_0_hat
@@ -628,6 +776,29 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             and i >= self.options.time_travel_steps
             and i < len(self.pipe.scheduler.timesteps) - 1
         )
+        
+    def do_physical_guidance(self, i: int) -> bool:
+        """Determine if physical guidance should be applied at timestep index `i`.
+        
+        Parameters
+        ----------
+        i: int
+            The index of the current timestep.
+            
+        Returns
+        -------
+        bool
+            Whether physical guidance should be applied.
+        """
+        if self.options.physical_guidance_scale <= 0:
+            return False
+        if self.options.physical_guidance_interval == 1:
+            return True
+        else:
+            if i > 0 and i < len(self.pipe.scheduler.timesteps) - 1 and i % self.options.physical_guidance_interval == 0:
+                return True
+            else:
+                return False
 
     def run_guided_sampling(self):
         # Encode the prompt.
@@ -642,7 +813,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             z, z_0_hat = self.denoise_step(z, t, step_index=self.current_denoise_step)
             
             # Update the latent code with physical guidance.
-            if self.options.physical_guidance_scale > 0:
+            if self.do_physical_guidance(self.current_denoise_step):
                 z = self.physical_guidance_step(z, z_0_hat)
             
             # Time-travel strategy

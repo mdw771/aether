@@ -5,6 +5,23 @@ import firefly.api.enums as enums
 
 
 @dataclass
+class ResampleOptions(pcapi.options.base.Options):
+    num_z_optimization_epochs: int = 50
+    """The number of epochs to optimize the latent code $\hat{z}_0$."""
+    
+    gamma: float = 40
+    """Coefficient of the schedule for $\sigma_t$, where $\sigma_t$ is calculated as
+    $\sigma_t^2 = \gamma \left( \frac{1 - \bar{\alpha_{t-1}}}{\bar{\alpha_t}} \right) \left( \frac{1 - \bar{\alpha_t}}{\bar{\alpha_{t-1}}} \right)$.
+    """
+    
+    optimizer: pcapi.enums.Optimizers = pcapi.enums.Optimizers.ADAM
+    """The optimizer."""
+    
+    step_size: float = 1e-3
+    """The learning rate."""
+
+
+@dataclass
 class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.AutodiffPtychographyReconstructorOptions):
     prompt: str = ""
     """The prompt to use for the guided sampling."""
@@ -32,6 +49,24 @@ class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.Autodiff
     
     noise_scheduler: enums.NoiseSchedulers = enums.NoiseSchedulers.DDPMScheduler
     """The noise scheduler to use for the guided sampling."""
+    
+    physical_guidance_method: enums.PhysicalGuidanceMethods = enums.PhysicalGuidanceMethods.RESAMPLE
+    """The method to use for physical guidance.
+    
+    - SCORE: Compute the score function of the physics model as the gradient of the data fidelity
+      loss, and add the gradient to the predicted noise.
+    
+    - RESAMPLE: Use the ReSample method in https://arxiv.org/abs/2307.08123, where the estimated
+      latent at timestep 0 is minimized as a subproblem and then stochastically resampled back
+      to timestep t.
+    """
+    
+    resample_options: ResampleOptions = field(default_factory=ResampleOptions)
+    """Options for the ReSample method."""
+    
+    physical_guidance_interval: int = 1
+    """The interval at which to apply physical guidance."""
+    
     num_epochs: int = 1
     """The number of epochs. An epoch here refers to one generation pass, which
     may be multiple steps of the guided sampling. Usually 1 is enough, but it can
