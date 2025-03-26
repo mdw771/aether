@@ -78,6 +78,12 @@ class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.Autodiff
     
     def get_reconstructor_type(self):
         return "guided_diffusion"
+    
+    def check(self, options: pcapi.options.task_options.PtychographyTaskOptions) -> None:
+        super().check(options)
+        if self.physical_guidance_method == enums.PhysicalGuidanceMethods.RESAMPLE:
+            if self.noise_scheduler != enums.NoiseSchedulers.DDIMScheduler:
+                raise ValueError("ReSample is only compatible with DDIMScheduler.")
 
 
 @dataclass
