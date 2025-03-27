@@ -43,14 +43,15 @@ class TestGuidedLatentDiffusion(tutils.TungstenDataTester):
         options.reconstructor_options.num_inference_steps = 10
         options.reconstructor_options.text_guidance_scale = 4.5
         options.reconstructor_options.physical_guidance_scale = 10
-        options.reconstructor_options.time_travel_interval = torch.inf
+        options.reconstructor_options.physical_guidance_method = api.enums.PhysicalGuidanceMethods.SCORE
+        options.reconstructor_options.time_travel_plan.stride = torch.inf
         options.reconstructor_options.prompt = "a binary pattern of intertwined lines"
         options.reconstructor_options.model_path = "stabilityai/stable-diffusion-xl-base-1.0"
 
         task = api.GuidedDiffusionPtychographyTask(options)
         task.run()
 
-        recon = task.reconstructor.parameter_group.object.data.angle().detach().cpu().numpy()[0, 480:544, 480:544]
+        recon = task.reconstructor.parameter_group.object.data.detach().cpu().numpy()[0, 480:544, 480:544]
         return recon
         
 

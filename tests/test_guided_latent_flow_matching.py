@@ -31,7 +31,8 @@ class TestGuidedLatentFlowMatching(tutils.TungstenDataTester):
         options.reconstructor_options.num_inference_steps = 40
         options.reconstructor_options.text_guidance_scale = 15
         options.reconstructor_options.physical_guidance_scale = 1e-1
-        options.reconstructor_options.time_travel_interval = torch.inf
+        options.reconstructor_options.physical_guidance_method = api.enums.PhysicalGuidanceMethods.SCORE
+        options.reconstructor_options.time_travel_plan.stride = torch.inf
         options.reconstructor_options.prompt = "a binary pattern of intertwined lines"
 
         task = api.GuidedDiffusionPtychographyTask(options)
