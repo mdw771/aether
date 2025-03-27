@@ -1,5 +1,6 @@
 import os
 import logging
+from typing import Optional
 
 import torch
 import diffusers
@@ -21,7 +22,7 @@ class ModelLoader:
     
 
 class HuggingFaceModelLoader(ModelLoader):
-    def __init__(self, model_path: str, *args, **kwargs):
+    def __init__(self, model_path: str, pipe_kwargs: Optional[dict] = None, *args, **kwargs):
         """HuggingFace model loader.
         
         Parameters
@@ -36,6 +37,7 @@ class HuggingFaceModelLoader(ModelLoader):
         """
         super().__init__(*args, **kwargs)
         self.model_path = model_path
+        self.pipe_kwargs = pipe_kwargs if pipe_kwargs is not None else {}
         self.local_model_path = os.path.join(self.get_local_model_repository_path(), self.model_path)
         
     def load(self) -> None:
@@ -48,22 +50,52 @@ class HuggingFaceModelLoader(ModelLoader):
             self.save_model()
                 
     def load_local_model(self):
-        raise NotImplementedError("Local model loading is not implemented")
+        with util.ignore_default_device():
+            self.pipe = diffusers.DiffusionPipeline.from_pretrained(
+                self.local_model_path,
+                **self.pipe_kwargs
+            )
     
     def download_model(self):
-        raise NotImplementedError("Model downloading is not implemented")
+        with util.ignore_default_device():
+            self.pipe = diffusers.DiffusionPipeline.from_pretrained(
+                self.model_path,
+                **self.pipe_kwargs
+            )
     
     def save_model(self):
         raise NotImplementedError("Model saving is not implemented")
+    
+    
+class HuggingFaceMultiModelLoader(ModelLoader):
+    def __init__(
+        self, 
+        model_paths: list[str], 
+        model_loader_classes: list[type[ModelLoader]],
+        pipe_kwargs_list: Optional[list[dict]] = None,
+        *args, **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.model_paths = model_paths
+        self.model_loader_classes = model_loader_classes
+        self.pipe_kwargs_list = pipe_kwargs_list if pipe_kwargs_list is not None else [None] * len(model_paths)
+        self.loaders = []
+        self.pipes = None
+        
+    def load(self) -> None:
+        for i, model_path in enumerate(self.model_paths):
+            self.loaders.append(self.model_loader_classes[i](model_path, self.pipe_kwargs_list[i]))
+            self.pipes.append(self.loaders[-1].pipe)
 
 
 class HuggingFaceStableDiffusionModelLoader(HuggingFaceModelLoader):
     def __init__(
         self, 
         model_path: str = "stabilityai/stable-diffusion-3.5-medium",
+        pipe_kwargs: Optional[dict] = None,
         *args, **kwargs
     ):
-        super().__init__(model_path, *args, **kwargs)
+        super().__init__(model_path, pipe_kwargs, *args, **kwargs)
         self.pipe = None
         
     def load(self) -> None:
@@ -72,36 +104,101 @@ class HuggingFaceStableDiffusionModelLoader(HuggingFaceModelLoader):
         self.pipe = self.pipe.to(self.device)
         # self.pipe.enable_model_cpu_offload()
         
-    def get_pipe_kwargs(self):
-        return {
-            "torch_dtype": torch.float16,
-            "use_safetensors": True
-        }
-        
     def load_local_model(self):
         with util.ignore_default_device():
             self.pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
                 self.local_model_path,
-                **self.get_pipe_kwargs()
+                **self.pipe_kwargs
             )
         
     def download_model(self):
         with util.ignore_default_device():
             self.pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
                 self.model_path,
-                **self.get_pipe_kwargs()
+                **self.pipe_kwargs
             )
 
     def save_model(self):
         self.pipe.save_pretrained(self.local_model_path)
 
 
+class HuggingFaceDeepFloydIFStageLoader(HuggingFaceModelLoader):
+    def __init__(self, model_path: str, stage: int, pipe_kwargs: Optional[dict] = None, *args, **kwargs):
+        super().__init__(model_path, pipe_kwargs, *args, **kwargs)
+        self.stage = stage
+        
+    def load(self) -> None:
+        super().load()
+        
+    def load_local_model(self):
+        with util.ignore_default_device():
+            self.pipe = diffusers.DiffusionPipeline.from_pretrained(
+                self.local_model_path,
+                **self.pipe_kwargs
+            )
+        
+    def download_model(self):
+        with util.ignore_default_device():
+            self.pipe = diffusers.DiffusionPipeline.from_pretrained(
+                self.model_path,
+                **self.pipe_kwargs
+            )
+        
+        
+class HuggingFaceDeepFloydIFModelLoader(HuggingFaceMultiModelLoader):
+    def __init__(
+        self, 
+        *args, **kwargs
+    ):
+        super().__init__(
+            model_paths=(
+                "DeepFloyd/IF-I-XL-v1.0", 
+                "DeepFloyd/IF-II-L-v1.0", 
+                "stabilityai/stable-diffusion-x4-upscaler"
+            ), 
+            model_loader_classes=(
+                HuggingFaceDeepFloydIFStageLoader, 
+                HuggingFaceDeepFloydIFStageLoader, 
+                HuggingFaceDeepFloydIFStageLoader
+            ),
+            pipe_kwargs_list=(
+                {"torch_dtype": torch.float16},
+                {"torch_dtype": torch.float16, "text_encoder": None},
+                {"torch_dtype": torch.float16, "feature_extractor": None, "safety_checker": None, "watermarker": None}
+            ),
+            *args, **kwargs
+        )
+        
+    def load(self) -> None:
+        # stage 1
+        stage_1 = diffusers.DiffusionPipeline.from_pretrained(
+            os.path.join(self.get_local_model_repository_path(), "DeepFloyd/IF-I-XL-v1.0"), 
+            torch_dtype=torch.float16
+        )
+        # stage_1.enable_model_cpu_offload()
+
+        # stage 2
+        stage_2 = diffusers.DiffusionPipeline.from_pretrained(
+            os.path.join(self.get_local_model_repository_path(), "DeepFloyd/IF-II-L-v1.0"), 
+            text_encoder=None, torch_dtype=torch.float16
+        )
+        # stage_2.enable_model_cpu_offload()
+        # stage 3
+        safety_modules = {"feature_extractor": stage_1.feature_extractor, "safety_checker": stage_1.safety_checker, "watermarker": stage_1.watermarker}
+        stage_3 = diffusers.DiffusionPipeline.from_pretrained(
+            os.path.join(self.get_local_model_repository_path(), "stabilityai/stable-diffusion-x4-upscaler"), 
+            **safety_modules, 
+            torch_dtype=torch.float16
+        )
+        # stage_3.enable_model_cpu_offload()
+        
+        self.pipes = [stage_1, stage_2, stage_3]
+    
+
 if __name__ == "__main__":
-    model_loader = HuggingFaceStableDiffusionModelLoader(
-        model_path="stabilityai/stable-diffusion-xl-base-1.0"
-    )
+    model_loader = HuggingFaceDeepFloydIFModelLoader()
     model_loader.load()
-    pipe = model_loader.pipe
+    pipe = model_loader.pipes[0]
 
     with torch.inference_mode():
         image = pipe(

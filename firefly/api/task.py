@@ -7,7 +7,11 @@ from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 from ptychi.data_structures.object import PlanarObject
 from ptychi.utils import to_tensor
 
-from firefly.reconstructor import GuidedLatentDiffusionReconstructor, GuidedLatentFlowMatchingReconstructor
+from firefly.reconstructor import (
+    GuidedLatentDiffusionReconstructor, 
+    GuidedLatentFlowMatchingReconstructor, 
+    GuidedDeepFloydIFReconstructor
+)
 import firefly.io as fio
 
 
@@ -35,10 +39,19 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
         self.object.optimizable = False
         
     def build_model_loader(self):
-        self.model_loader = fio.HuggingFaceStableDiffusionModelLoader(
-            model_path=self.reconstructor_options.model_path,
-            device=torch.get_default_device(),
-        )
+        if "deepfloyd" in self.reconstructor_options.model_path.lower():
+            logger.warning(
+                "DeepFloyd will be loaded from default locations and with default variants. "
+                "The exact path provided will be ignored."
+            )
+            self.model_loader = fio.HuggingFaceDeepFloydIFModelLoader(
+                device=torch.get_default_device(),
+            )
+        else:
+            self.model_loader = fio.HuggingFaceStableDiffusionModelLoader(
+                model_path=self.reconstructor_options.model_path,
+                device=torch.get_default_device(),
+            )
         
     def build_reconstructor(self):
         par_group = PtychographyParameterGroup(
@@ -60,7 +73,9 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
         self.reconstructor.build()
         
     def get_reconstructor_class(self):
-        if "stable-diffusion-3" in self.reconstructor_options.model_path:
+        if "stable-diffusion-3" in self.reconstructor_options.model_path.lower():
             return GuidedLatentFlowMatchingReconstructor
+        elif "deepfloyd" in self.reconstructor_options.model_path.lower():
+            return GuidedDeepFloydIFReconstructor
         else:
             return GuidedLatentDiffusionReconstructor

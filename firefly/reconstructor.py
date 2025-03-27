@@ -2,9 +2,11 @@ from typing import Literal, Optional
 import logging
 
 import numpy as np
+import diffusers
 from PIL import Image
 import torch
-from diffusers import StableDiffusion3Pipeline, StableDiffusionXLPipeline
+import torch.nn.functional as F
+from diffusers import StableDiffusion3Pipeline, StableDiffusionXLPipeline, IFPipeline
 from ptychi.reconstructors.ad_ptychography import AutodiffPtychographyReconstructor
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 import ptychi.maps as pcmaps
@@ -48,7 +50,6 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         self.forward_model = None
         
         self.current_denoise_step = 0
-        self.do_classifier_free_guidance = self.options.text_guidance_scale > 1 
         self.text_embeddings = self.TextEmbeddings()
         
         self.sampled_image: torch.Tensor = None
@@ -61,6 +62,20 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
     def build_pipe(self):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
+        
+    def set_noise_scheduler_in_pipe(self, pipe):
+        # Change scheduler.
+        with util.ignore_default_device():
+            pipe.scheduler = maps.get_noise_scheduler(
+                self.options.noise_scheduler
+            ).from_config(pipe.scheduler.config)
+        
+        # Set timesteps.
+        pipe.scheduler.set_timesteps(
+            self.options.num_inference_steps, device=torch.device("cpu")
+        )
+        
+        return pipe
         
     def build_counter(self):
         super().build_counter()
@@ -75,6 +90,53 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         self.forward_model = self.forward_model_class(
             self.parameter_group, **self.forward_model_params
         )
+        
+    @property
+    def do_classifier_free_guidance(self):
+        return self.options.text_guidance_scale > 1
+        
+    def do_time_travel(self, i: int) -> bool:
+        """Determine if time travel should be performed at timestep index `i`.
+        
+        Parameters
+        ----------
+        i: int
+            The index of the current timestep.
+            
+        Returns
+        -------
+        bool
+            Whether time travel should be performed.
+        """
+        return (
+            self.options.time_travel_plan.is_enabled(i)
+            and i >= self.options.time_travel_steps
+            and i < len(self.pipe.scheduler.timesteps) - 1
+        )
+    
+    def do_physical_guidance(self, i: int) -> bool:
+        """Determine if physical guidance should be applied at timestep index `i`.
+        
+        Parameters
+        ----------
+        i: int
+            The index of the current timestep.
+            
+        Returns
+        -------
+        bool
+            Whether physical guidance should be applied.
+        """
+        if self.options.physical_guidance_scale <= 0:
+            return False
+        else:
+            if (
+                i < len(self.pipe.scheduler.timesteps) - 1 
+                and self.options.physical_guidance_plan.is_enabled(i)
+            ):
+                return True
+            else:
+                return False
         
     def get_alpha_prod_t(self, *, t: Optional[int] = None, denoising_step: Optional[int] = None):
         """Get the cumulative alpha product at a specific timestep or
@@ -230,6 +292,303 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
                 "`data_as_parameter=False`."
             )
         self.forward_model.object.tensor.data = torch.stack([o_hat.real, o_hat.imag], dim=-1)
+        
+    def run_guided_sampling(self):
+        raise NotImplementedError
+        
+    def run(self, n_epochs: int = None):
+        n_epochs = self.options.num_epochs if n_epochs is None else n_epochs
+        with torch.no_grad():
+            for _ in range(n_epochs):
+                self.run_pre_epoch_hooks()
+                self.run_guided_sampling()
+        
+        
+class GuidedPixelSpaceDiffusionReconstructor(GuidedDiffusionReconstructor):
+    pass
+
+
+class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
+    
+    options: "api.GuidedDiffusionReconstructorOptions"
+    def __init__(
+        self,
+        parameter_group: PtychographyParameterGroup,
+        dataset: PtychographyDataset,
+        model_loader: HuggingFaceStableDiffusionModelLoader,
+        options: "api.GuidedDiffusionReconstructorOptions",
+        *args, **kwargs
+    ):
+        super().__init__(parameter_group, dataset, model_loader, options, *args, **kwargs)
+        self.pipes = None
+        
+    def build_pipe(self):
+        self.model_loader.load()
+        self.pipes = self.model_loader.pipes
+                
+        for i, pipe in enumerate(self.pipes):
+            pipe = self.set_noise_scheduler_in_pipe(pipe)
+            if hasattr(pipe, "vae"):
+                pipe.vae = pipe.vae.to(torch.float32)
+            self.pipes[i] = pipe.to("cuda")
+            
+    def encode_prompt_dfif(
+        self, 
+        pipe: diffusers.DiffusionPipeline, 
+        prompt: Optional[str] = None,
+        prompt_embeds: Optional[torch.Tensor] = None, 
+        negative_prompt_embeds: Optional[torch.Tensor] = None
+    ):
+        prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
+            prompt=prompt,
+            do_classifier_free_guidance=self.do_classifier_free_guidance,
+            num_images_per_prompt=1,
+            negative_prompt=None,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            clean_caption=True,
+        )
+        self.text_embeddings.prompt_embeds = prompt_embeds
+        self.text_embeddings.negative_prompt_embeds = negative_prompt_embeds
+        
+        if self.do_classifier_free_guidance:
+            self.text_embeddings.prompt_embeds = torch.cat([
+                self.text_embeddings.negative_prompt_embeds, 
+                self.text_embeddings.prompt_embeds
+            ]
+            )
+            
+    def denoise_step_dfif(
+        self, 
+        pipe: diffusers.DiffusionPipeline, 
+        x: torch.Tensor, 
+        t: float,
+        cond_image: Optional[torch.Tensor] = None,
+        noise_level: Optional[float] = None
+    ):
+        if cond_image is not None:
+            model_input = torch.cat([x, cond_image], dim=1)
+        else:
+            model_input = x
+        model_input = (
+            torch.cat([model_input] * 2) if self.do_classifier_free_guidance else model_input
+        )
+        model_input = pipe.scheduler.scale_model_input(model_input, t)
+
+        # predict the noise residual
+        noise_pred = pipe.unet(
+            model_input,
+            t,
+            encoder_hidden_states=self.text_embeddings.prompt_embeds,
+            class_labels=noise_level,
+            cross_attention_kwargs=None,
+            return_dict=False,
+        )[0]
+
+        # perform guidance
+        if self.do_classifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            if cond_image is not None:
+                noise_pred_uncond, _ = noise_pred_uncond.split(model_input.shape[1] // 2, dim=1)
+                noise_pred_text, predicted_variance = noise_pred_text.split(model_input.shape[1] // 2, dim=1)
+            else:
+                noise_pred_uncond, _ = noise_pred_uncond.split(model_input.shape[1], dim=1)
+                noise_pred_text, predicted_variance = noise_pred_text.split(model_input.shape[1], dim=1)
+            noise_pred = noise_pred_uncond + self.options.text_guidance_scale * (noise_pred_text - noise_pred_uncond)
+            noise_pred = torch.cat([noise_pred, predicted_variance], dim=1)
+
+        if pipe.scheduler.config.variance_type not in ["learned", "learned_range"]:
+            noise_pred, _ = noise_pred.split(model_input.shape[1], dim=1)
+
+        # compute the previous noisy sample x_t -> x_t-1
+        res = pipe.scheduler.step(noise_pred, t, x)
+        x = res.prev_sample
+        x_0_hat = res.pred_original_sample
+        return x, x_0_hat
+    
+    def prepare_conditioning_image(
+            self, 
+            pipe: diffusers.DiffusionPipeline, 
+            image: torch.Tensor, 
+            noise_level: float
+    ):
+        """
+        Upscale the input image and add noise to it for the second stage of DeepFloyd IF
+        and convert noise level to the right format.
+        
+        Parameters
+        ----------
+        image: torch.Tensor
+            A (n, 3, h, w) tensor giving the input image.
+        noise_level: float
+            The noise level to add to the image.
+            
+        Returns
+        -------
+        torch.Tensor
+            A (n, 3, h, w) tensor giving the upscaled image.
+        torch.Tensor
+            A (n, ) tensor giving the noise level.
+        """
+        image = pipe.preprocess_image(image, 1, pipe.unet.device)
+        upscaled = F.interpolate(
+            image, 
+            (pipe.unet.config.sample_size, pipe.unet.config.sample_size), 
+            mode="bilinear", 
+            align_corners=True
+        )
+
+        noise_level = torch.tensor([noise_level] * upscaled.shape[0], device=upscaled.device)
+        noise = torch.randn_like(upscaled)
+        upscaled = pipe.image_noising_scheduler.add_noise(upscaled, noise, timesteps=noise_level)
+        
+        if self.do_classifier_free_guidance:
+            noise_level = torch.cat([noise_level] * 2)
+        return upscaled, noise_level
+            
+    def run_stage_1(
+        self, 
+        prompt_embeds: torch.Tensor, 
+        negative_embeds: torch.Tensor
+    ):
+        pipe = self.pipes[0]
+        
+        self.encode_prompt_dfif(pipe, prompt=None, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_embeds)
+        
+        x = pipe.prepare_intermediate_images(
+            1,
+            pipe.unet.config.in_channels,
+            pipe.unet.config.sample_size,
+            pipe.unet.config.sample_size,
+            self.text_embeddings.prompt_embeds.dtype,
+            self.text_embeddings.prompt_embeds.device,
+            None
+        )
+        
+        if hasattr(pipe, "text_encoder_offload_hook") and pipe.text_encoder_offload_hook is not None:
+            pipe.text_encoder_offload_hook.offload()
+            
+        for self.current_denoise_step, t in enumerate(pipe.scheduler.timesteps):
+            x, x_0_hat = self.denoise_step_dfif(pipe, x, t)
+            
+        return x
+    
+    def run_stage_2(
+        self, 
+        image: Optional[torch.Tensor] = None, 
+        prompt_embeds: torch.Tensor = None, 
+        negative_embeds: torch.Tensor = None,
+        noise_level: float = 250
+    ):
+        pipe = self.pipes[1]
+        
+        self.encode_prompt_dfif(pipe, prompt=None, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_embeds)
+        
+        x = pipe.prepare_intermediate_images(
+            1,
+            pipe.unet.config.in_channels // 2,
+            pipe.unet.config.sample_size,
+            pipe.unet.config.sample_size,
+            self.text_embeddings.prompt_embeds.dtype,
+            self.text_embeddings.prompt_embeds.device,
+            None
+        )
+        
+        upscaled, noise_level = self.prepare_conditioning_image(pipe, image, noise_level)
+        
+        if hasattr(pipe, "text_encoder_offload_hook") and pipe.text_encoder_offload_hook is not None:
+            pipe.text_encoder_offload_hook.offload()
+            
+        for self.current_denoise_step, t in enumerate(pipe.scheduler.timesteps):
+            x, x_0_hat = self.denoise_step_dfif(pipe, x, t, cond_image=upscaled, noise_level=noise_level)
+            
+        return x
+    
+    def run_stage_3(self, image: torch.Tensor, noise_level: float = 100):
+        pipe = self.pipes[2]
+        
+        prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
+            self.options.prompt,
+            image.device,
+            1,
+            self.do_classifier_free_guidance,
+            None,
+        )
+        
+        if self.do_classifier_free_guidance:
+            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
+        
+        image = pipe.image_processor.preprocess(image)
+        image = image.to(dtype=prompt_embeds.dtype, device=image.device)
+        
+        # Add noise to image
+        noise_level = torch.tensor([noise_level], dtype=torch.long, device=image.device)
+        noise = torch.randn_like(image)
+        image = pipe.low_res_scheduler.add_noise(image, noise, noise_level)
+
+        batch_multiplier = 2 if self.do_classifier_free_guidance else 1
+        image = torch.cat([image] * batch_multiplier * 1)
+        noise_level = torch.cat([noise_level] * image.shape[0])
+        
+        # Prepare latent variables
+        height, width = image.shape[2:]
+        num_channels_latents = pipe.vae.config.latent_channels
+        z = pipe.prepare_latents(
+            1,
+            pipe.vae.config.latent_channels,
+            height,
+            width,
+            prompt_embeds.dtype,
+            image.device,
+            None
+        )
+        
+        num_channels_image = image.shape[1]
+        if num_channels_latents + num_channels_image != pipe.unet.config.in_channels:
+            raise ValueError(
+                f"Incorrect configuration settings! The config of `pipeline.unet`: {pipe.unet.config} expects"
+                f" {pipe.unet.config.in_channels} but received `num_channels_latents`: {num_channels_latents} +"
+                f" `num_channels_image`: {num_channels_image} "
+                f" = {num_channels_latents+num_channels_image}. Please verify the config of"
+                " `pipeline.unet` or your `image` input."
+            )
+        
+        for self.current_denoise_step, t in enumerate(pipe.scheduler.timesteps):
+            # expand the latents if we are doing classifier free guidance
+            latent_model_input = torch.cat([z] * 2) if self.do_classifier_free_guidance else z
+
+            # concat latents, mask, masked_image_latents in the channel dimension
+            latent_model_input = pipe.scheduler.scale_model_input(latent_model_input, t)
+            latent_model_input = torch.cat([latent_model_input, image], dim=1)
+
+            # predict the noise residual
+            noise_pred = pipe.unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=prompt_embeds,
+                class_labels=noise_level,
+                return_dict=False,
+            )[0]
+
+            # perform guidance
+            if self.do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + self.options.text_guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # compute the previous noisy sample x_t -> x_t-1
+            z = pipe.scheduler.step(noise_pred, t, z, return_dict=False)[0]
+            
+        z = z.to(pipe.vae.dtype)
+        image = pipe.vae.decode(z / pipe.vae.config.scaling_factor, return_dict=False)[0]
+        image = image.to(pipe.unet.dtype)
+        return image
+        
+    def run_guided_sampling(self):
+        prompt_embeds, negative_embeds = self.pipes[0].encode_prompt(self.options.prompt)
+        x = self.run_stage_1(prompt_embeds=prompt_embeds, negative_embeds=negative_embeds)
+        x = self.run_stage_2(image=x, prompt_embeds=prompt_embeds, negative_embeds=negative_embeds)
+        x = self.run_stage_3(image=x, noise_level=100)
+        return
 
 
 class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
@@ -262,16 +621,7 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
         
-        # Change scheduler.
-        with util.ignore_default_device():
-            self.pipe.scheduler = maps.get_noise_scheduler(
-                self.options.noise_scheduler
-            ).from_config(self.pipe.scheduler.config)
-        
-        # Set timesteps.
-        self.pipe.scheduler.set_timesteps(
-            self.options.num_inference_steps, device=torch.device("cpu")
-        )
+        self.pipe = self.set_noise_scheduler_in_pipe(self.pipe)
         
         # VAE requires float32 to prevent overflow. 
         # `self.decode_latent` and `self.encode_image` contain upcasting, but they
@@ -778,49 +1128,6 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         self.text_embeddings.negative_prompt_embeds = negative_prompt_embeds
         self.text_embeddings.pooled_prompt_embeds = pooled_prompt_embeds
         self.text_embeddings.negative_pooled_prompt_embeds = negative_pooled_prompt_embeds
-        
-    def do_time_travel(self, i: int) -> bool:
-        """Determine if time travel should be performed at timestep index `i`.
-        
-        Parameters
-        ----------
-        i: int
-            The index of the current timestep.
-            
-        Returns
-        -------
-        bool
-            Whether time travel should be performed.
-        """
-        return (
-            self.options.time_travel_plan.is_enabled(i)
-            and i >= self.options.time_travel_steps
-            and i < len(self.pipe.scheduler.timesteps) - 1
-        )
-    
-    def do_physical_guidance(self, i: int) -> bool:
-        """Determine if physical guidance should be applied at timestep index `i`.
-        
-        Parameters
-        ----------
-        i: int
-            The index of the current timestep.
-            
-        Returns
-        -------
-        bool
-            Whether physical guidance should be applied.
-        """
-        if self.options.physical_guidance_scale <= 0:
-            return False
-        else:
-            if (
-                i < len(self.pipe.scheduler.timesteps) - 1 
-                and self.options.physical_guidance_plan.is_enabled(i)
-            ):
-                return True
-            else:
-                return False
 
     def run_guided_sampling(self):
         # Encode the prompt.
@@ -865,13 +1172,6 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         self.sampled_image = self.decode_latent(z.to(self.pipe.vae.dtype))
         self.sampled_image_pil = self.pipe.image_processor.postprocess(self.sampled_image, output_type="pil")[0]
         self.parameter_group.object.set_data(self.image_to_object(self.sampled_image))
-
-    def run(self, n_epochs: int = None):
-        n_epochs = self.options.num_epochs if n_epochs is None else n_epochs
-        with torch.no_grad():
-            for _ in range(n_epochs):
-                self.run_pre_epoch_hooks()
-                self.run_guided_sampling()
 
 
 class GuidedLatentFlowMatchingReconstructor(GuidedLatentDiffusionReconstructor):
