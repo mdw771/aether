@@ -41,8 +41,9 @@ class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.Autodiff
     time_travel_steps: int = 10
     """The number of steps to travel back in time."""
     
-    time_travel_interval: int = 1
-    """The interval at which to travel back in time."""
+    time_travel_plan: pcapi.OptimizationPlan = field(default_factory=pcapi.OptimizationPlan)
+    """The scheduling plan for time travel where one can set the start, stop and interval
+    in terms of the denoising step."""
     
     model_path: str = "stabilityai/stable-diffusion-xl-base-1.0"
     """The path to the model to use for the guided sampling."""
@@ -61,11 +62,12 @@ class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.Autodiff
       to timestep t.
     """
     
+    physical_guidance_plan: pcapi.OptimizationPlan = field(default_factory=pcapi.OptimizationPlan)
+    """The scheduling plan for physical guidance where one can set the start, stop and interval
+    in terms of the denoising step."""
+    
     resample_options: ResampleOptions = field(default_factory=ResampleOptions)
     """Options for the ReSample method."""
-    
-    physical_guidance_interval: int = 1
-    """The interval at which to apply physical guidance."""
     
     num_epochs: int = 1
     """The number of epochs. An epoch here refers to one generation pass, which

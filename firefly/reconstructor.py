@@ -772,11 +772,11 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             Whether time travel should be performed.
         """
         return (
-            i % self.options.time_travel_interval == 0 
+            self.options.time_travel_plan.is_enabled(i)
             and i >= self.options.time_travel_steps
             and i < len(self.pipe.scheduler.timesteps) - 1
         )
-        
+    
     def do_physical_guidance(self, i: int) -> bool:
         """Determine if physical guidance should be applied at timestep index `i`.
         
@@ -794,9 +794,8 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             return False
         else:
             if (
-                (i > 0 or self.options.physical_guidance_interval == 1)
-                and i < len(self.pipe.scheduler.timesteps) - 1 
-                and i % self.options.physical_guidance_interval == 0
+                i < len(self.pipe.scheduler.timesteps) - 1 
+                and self.options.physical_guidance_plan.is_enabled(i)
             ):
                 return True
             else:
