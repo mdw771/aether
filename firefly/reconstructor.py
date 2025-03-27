@@ -22,8 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
-    
-    
     class TextEmbeddings:
         prompt_embeds: torch.Tensor
         negative_prompt_embeds: torch.Tensor
@@ -32,9 +30,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         add_time_ids: torch.Tensor
         negative_add_time_ids: torch.Tensor
         add_text_embeds: torch.Tensor
-    
-    options: "api.GuidedDiffusionReconstructorOptions"
-    
+        
     def __init__(
         self,
         parameter_group: PtychographyParameterGroup,
@@ -57,42 +53,14 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         
         self.sampled_image: torch.Tensor = None
         self.sampled_image_pil: Image.Image = None
-                
-    def check_inputs(self):
-        super().check_inputs()
-        if self.parameter_group.object.optimizable:
-            raise ValueError("The object must not be optimizable for physics-guided sampling.")
         
     def build(self):
         self.build_pipe()
         super().build()
         
     def build_pipe(self):
-        # Load pipe to CPU.
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
-        
-        # Change scheduler.
-        with util.ignore_default_device():
-            self.pipe.scheduler = maps.get_noise_scheduler(
-                self.options.noise_scheduler
-            ).from_config(self.pipe.scheduler.config)
-        
-        # Set timesteps.
-        self.pipe.scheduler.set_timesteps(
-            self.options.num_inference_steps, device=torch.device("cpu")
-        )
-        
-        # VAE requires float32 to prevent overflow. 
-        # `self.decode_latent` and `self.encode_image` contain upcasting, but they
-        # run into issues during backprop when the decoded image is casted to float32
-        # prior to the physics forward model. Thus, we avoid the upcasting by converting
-        # the VAE to float32 beforehand, and casting the latent to float32 before the
-        # automatic differentiation graph of physical guidance.
-        self.pipe.vae = self.pipe.vae.to(torch.float32)
-        
-        # Move pipe to GPU.
-        self.pipe = self.pipe.to("cuda")
         
     def build_counter(self):
         super().build_counter()
@@ -108,21 +76,6 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             self.parameter_group, **self.forward_model_params
         )
         
-    def get_denoising_step_from_timestep(self, t: int):
-        """Get the denoising step from the timestep.
-        
-        Parameters
-        ----------
-        t: int
-            The timestep in `self.pipe.scheduler.timesteps`.
-            
-        Returns
-        -------
-        int
-            The timestep in `self.pipe.scheduler.timesteps`.
-        """
-        return torch.where(self.pipe.scheduler.timesteps == t)[0][0]
-            
     def get_alpha_prod_t(self, *, t: Optional[int] = None, denoising_step: Optional[int] = None):
         """Get the cumulative alpha product at a specific timestep or
         denoising step.
@@ -148,6 +101,21 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             t = self.pipe.scheduler.timesteps[denoising_step]
         ind = int(t)
         return self.pipe.scheduler.alphas_cumprod[ind]
+    
+    def get_denoising_step_from_timestep(self, t: int):
+        """Get the denoising step from the timestep.
+        
+        Parameters
+        ----------
+        t: int
+            The timestep in `self.pipe.scheduler.timesteps`.
+            
+        Returns
+        -------
+        int
+            The timestep in `self.pipe.scheduler.timesteps`.
+        """
+        return torch.where(self.pipe.scheduler.timesteps == t)[0][0]
         
     def preconditioned_phase_unwrap(self, obj: torch.Tensor) -> torch.Tensor:
         """Phase unwrapping with preconditioning. The constant phase offset
@@ -178,6 +146,143 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         phase = torch.stack(phase)
         phase = self.parameter_group.object.preconditioner * phase
         return phase
+    
+    def image_to_object(
+        self, 
+        img: torch.Tensor, 
+        representation: Literal["real_imag", "mag_phase"] = "mag_phase"
+    ) -> torch.Tensor:
+        """Convert a pixel-space image to a complex object tensor.
+        
+        Parameters
+        ----------
+        img: torch.Tensor
+            A (1, 3, h, w) tensor giving the decoded image.
+            
+        Returns
+        -------
+        torch.Tensor
+            A (1, h, w) tensor giving the complex object.
+        """
+        if img.shape[0] != 1:
+            raise ValueError("The length of the batch dimension of img must be 1.")
+        
+        if representation == "real_imag":
+            real = img[:, 0, ...] + img[:, 2, ...] * 0.5
+            imag = img[:, 1, ...] + img[:, 2, ...] * 0.5
+            obj = real + 1j * imag
+        elif representation == "mag_phase":
+            mag = 1
+            phase = img.mean(1)
+            obj = mag * torch.exp(1j * phase)
+        else:
+            raise ValueError(f"Invalid representation: {representation}")
+        obj = maths.TypeCastFunction.apply(obj, torch.complex64)
+        return obj
+    
+    def object_to_image(
+        self, 
+        obj: torch.Tensor, 
+        representation: Literal["real_imag", "mag_phase", "single_channel"] = "mag_phase"
+    ) -> torch.Tensor:
+        """Convert a complex object tensor to an image assumed by the encoder.
+        
+        Parameters
+        ----------
+        obj: torch.Tensor
+            A (1, h, w) tensor giving the complex object.
+            
+        Returns
+        -------
+        torch.Tensor
+            A (1, 3, h, w) tensor giving the image.
+        """
+        if representation == "real_imag":
+            img = torch.stack([
+                obj.real,
+                obj.imag,
+                0.5 * obj.real + 0.5 * obj.imag
+            ], dim=1)
+        elif representation == "mag_phase":
+            phase = obj.angle()
+            # phase = self.preconditioned_phase_unwrap(obj)
+            img = phase.unsqueeze(1)
+            img = img.repeat(1, 3, 1, 1)
+        elif representation == "single_channel":
+            if obj.dtype.is_complex:
+                raise ValueError("Single channel representation does not support complex numbers.")
+            img = obj.unsqueeze(1)
+            img = img.repeat(1, 3, 1, 1)
+        else:
+            raise ValueError(f"Invalid representation: {representation}")
+        img = img.to(self.pipe.dtype)
+        return img
+    
+    def set_object_data_to_forward_model(self, o_hat: torch.Tensor):
+        """Set object data to the object function object in the forward model. 
+        We can't use object.set_data() here because it is an in-place operation
+        that will break the gradient.
+        """
+        if isinstance(self.forward_model.object.tensor.data, torch.nn.Parameter):
+            raise TypeError(
+                "The tensor in the ComplexTensor of the object should not "
+                "be a torch.nn.Parameter. When creating the object, set "
+                "`data_as_parameter=False`."
+            )
+        self.forward_model.object.tensor.data = torch.stack([o_hat.real, o_hat.imag], dim=-1)
+
+
+class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
+    
+    options: "api.GuidedDiffusionReconstructorOptions"
+    
+    def __init__(
+        self,
+        parameter_group: PtychographyParameterGroup,
+        dataset: PtychographyDataset,
+        model_loader: HuggingFaceStableDiffusionModelLoader,
+        options: "api.GuidedDiffusionReconstructorOptions",
+        *args, **kwargs
+    ):
+        super().__init__(
+            parameter_group, 
+            dataset=dataset, 
+            model_loader=model_loader, 
+            options=options, 
+            *args, **kwargs
+        )
+        
+    def check_inputs(self):
+        super().check_inputs()
+        if self.parameter_group.object.optimizable:
+            raise ValueError("The object must not be optimizable for physics-guided sampling.")
+        
+    def build_pipe(self):
+        # Load pipe to CPU.
+        self.model_loader.load()
+        self.pipe = self.model_loader.pipe
+        
+        # Change scheduler.
+        with util.ignore_default_device():
+            self.pipe.scheduler = maps.get_noise_scheduler(
+                self.options.noise_scheduler
+            ).from_config(self.pipe.scheduler.config)
+        
+        # Set timesteps.
+        self.pipe.scheduler.set_timesteps(
+            self.options.num_inference_steps, device=torch.device("cpu")
+        )
+        
+        # VAE requires float32 to prevent overflow. 
+        # `self.decode_latent` and `self.encode_image` contain upcasting, but they
+        # run into issues during backprop when the decoded image is casted to float32
+        # prior to the physics forward model. Thus, we avoid the upcasting by converting
+        # the VAE to float32 beforehand, and casting the latent to float32 before the
+        # automatic differentiation graph of physical guidance.
+        self.pipe.vae = self.pipe.vae.to(torch.float32)
+        
+        # Move pipe to GPU.
+        self.pipe = self.pipe.to("cuda")
         
     def prepare_initial_latent(self) -> torch.Tensor:
         """Get the initial latent code. The size of the latent is determined
@@ -449,90 +554,6 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         if z_0_hat.dtype != z_t.dtype:
             z_0_hat = z_0_hat.to(z_t.dtype)
         return z_tm1, z_0_hat
-    
-    def image_to_object(
-        self, 
-        img: torch.Tensor, 
-        representation: Literal["real_imag", "mag_phase"] = "mag_phase"
-    ) -> torch.Tensor:
-        """Convert a pixel-space image to a complex object tensor.
-        
-        Parameters
-        ----------
-        img: torch.Tensor
-            A (1, 3, h, w) tensor giving the decoded image.
-            
-        Returns
-        -------
-        torch.Tensor
-            A (1, h, w) tensor giving the complex object.
-        """
-        if img.shape[0] != 1:
-            raise ValueError("The length of the batch dimension of img must be 1.")
-        
-        if representation == "real_imag":
-            real = img[:, 0, ...] + img[:, 2, ...] * 0.5
-            imag = img[:, 1, ...] + img[:, 2, ...] * 0.5
-            obj = real + 1j * imag
-        elif representation == "mag_phase":
-            mag = 1
-            phase = img.mean(1)
-            obj = mag * torch.exp(1j * phase)
-        else:
-            raise ValueError(f"Invalid representation: {representation}")
-        obj = maths.TypeCastFunction.apply(obj, torch.complex64)
-        return obj
-    
-    def object_to_image(
-        self, 
-        obj: torch.Tensor, 
-        representation: Literal["real_imag", "mag_phase", "single_channel"] = "mag_phase"
-    ) -> torch.Tensor:
-        """Convert a complex object tensor to an image assumed by the encoder.
-        
-        Parameters
-        ----------
-        obj: torch.Tensor
-            A (1, h, w) tensor giving the complex object.
-            
-        Returns
-        -------
-        torch.Tensor
-            A (1, 3, h, w) tensor giving the image.
-        """
-        if representation == "real_imag":
-            img = torch.stack([
-                obj.real,
-                obj.imag,
-                0.5 * obj.real + 0.5 * obj.imag
-            ], dim=1)
-        elif representation == "mag_phase":
-            phase = obj.angle()
-            # phase = self.preconditioned_phase_unwrap(obj)
-            img = phase.unsqueeze(1)
-            img = img.repeat(1, 3, 1, 1)
-        elif representation == "single_channel":
-            if obj.dtype.is_complex:
-                raise ValueError("Single channel representation does not support complex numbers.")
-            img = obj.unsqueeze(1)
-            img = img.repeat(1, 3, 1, 1)
-        else:
-            raise ValueError(f"Invalid representation: {representation}")
-        img = img.to(self.pipe.dtype)
-        return img
-    
-    def set_object_data_to_forward_model(self, o_hat: torch.Tensor):
-        """Set object data to the object function object in the forward model. 
-        We can't use object.set_data() here because it is an in-place operation
-        that will break the gradient.
-        """
-        if isinstance(self.forward_model.object.tensor.data, torch.nn.Parameter):
-            raise TypeError(
-                "The tensor in the ComplexTensor of the object should not "
-                "be a torch.nn.Parameter. When creating the object, set "
-                "`data_as_parameter=False`."
-            )
-        self.forward_model.object.tensor.data = torch.stack([o_hat.real, o_hat.imag], dim=-1)
         
     def initialize_gradients(self, z: torch.Tensor):
         z.grad = None
@@ -853,7 +874,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
                 self.run_guided_sampling()
 
 
-class GuidedFlowMatchingReconstructor(GuidedDiffusionReconstructor):
+class GuidedLatentFlowMatchingReconstructor(GuidedLatentDiffusionReconstructor):
     """A reconstructor that works with flow matching generative models
     (Stable Diffusion 3.5, etc.).
     """

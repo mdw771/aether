@@ -7,7 +7,7 @@ from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 from ptychi.data_structures.object import PlanarObject
 from ptychi.utils import to_tensor
 
-from firefly.reconstructor import GuidedDiffusionReconstructor, GuidedFlowMatchingReconstructor
+from firefly.reconstructor import GuidedLatentDiffusionReconstructor, GuidedLatentFlowMatchingReconstructor
 import firefly.io as fio
 
 
@@ -61,6 +61,6 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
         
     def get_reconstructor_class(self):
         if "stable-diffusion-3" in self.reconstructor_options.model_path:
-            return GuidedFlowMatchingReconstructor
+            return GuidedLatentFlowMatchingReconstructor
         else:
-            return GuidedDiffusionReconstructor
+            return GuidedLatentDiffusionReconstructor
