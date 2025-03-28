@@ -1,5 +1,6 @@
 from typing import Literal, Optional
 import logging
+import copy
 
 import numpy as np
 import diffusers
@@ -9,6 +10,7 @@ import torch.nn.functional as F
 from diffusers import StableDiffusion3Pipeline, StableDiffusionXLPipeline, IFPipeline
 from ptychi.reconstructors.ad_ptychography import AutodiffPtychographyReconstructor
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
+from ptychi.data_structures.probe import Probe
 import ptychi.maps as pcmaps
 from ptychi.io_handles import PtychographyDataset
 import ptychi.image_proc as ip
@@ -114,24 +116,28 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
             and i < len(self.pipe.scheduler.timesteps) - 1
         )
     
-    def do_physical_guidance(self, i: int) -> bool:
+    def do_physical_guidance(self, i: int, pipe: Optional[diffusers.DiffusionPipeline] = None) -> bool:
         """Determine if physical guidance should be applied at timestep index `i`.
         
         Parameters
         ----------
         i: int
             The index of the current timestep.
+        pipe: diffusers.DiffusionPipeline
+            The pipe.
             
         Returns
         -------
         bool
             Whether physical guidance should be applied.
         """
+        if pipe is None:
+            pipe = self.pipe
         if self.options.physical_guidance_scale <= 0:
             return False
         else:
             if (
-                i < len(self.pipe.scheduler.timesteps) - 1 
+                i < len(pipe.scheduler.timesteps) - 1 
                 and self.options.physical_guidance_plan.is_enabled(i)
             ):
                 return True
@@ -305,7 +311,72 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         
         
 class GuidedPixelSpaceDiffusionReconstructor(GuidedDiffusionReconstructor):
-    pass
+    def initialize_gradients(self, x: torch.Tensor):
+        x.grad = None
+    
+    def calculate_physical_guidance_score(self, x: torch.Tensor):
+        """Denoise the latent code by one step, decode it, and calculate
+        the score function of the physical model $f$, given by
+        $\nabla_{z_{t-1}} || f(D(z_{t-1})) - y ||^2$,  where $D$ is the
+        decoder and $f$ is the forward model.
+        
+        Parameters
+        ----------
+        x: torch.Tensor
+            A (1, 3, h, w) tensor giving the noisy image.
+            
+        Returns
+        -------
+        torch.Tensor
+            The score function of the physical model.
+        """
+        if x.shape[0] != 1:
+            raise ValueError("The length of the batch dimension of z_t must be 1.")
+        
+        accumulated_grad_phase = torch.zeros_like(x)
+        with torch.enable_grad():
+            x = x.requires_grad_(True)
+            
+            o_hat = self.image_to_object(x)
+            self.set_object_data_to_forward_model(o_hat)
+            self.forward_model.object.update_pos_origin_coordinates()
+            
+            for batch_data in self.dataloader:
+                self.initialize_gradients(x)
+                input_data, y_true = self.prepare_batch_data(batch_data)
+                y_pred = self.forward_model(*input_data)
+                batch_loss = self.loss_function(
+                    y_pred, y_true
+                )
+                batch_loss.backward(retain_graph=True)
+                self.step_all_optimizers()
+                accumulated_grad_phase += x.grad * y_pred.numel()
+                self.forward_model.zero_grad()
+        
+        accumulated_grad_phase = accumulated_grad_phase / self.dataset.patterns.numel()
+        return accumulated_grad_phase
+    
+    def physical_guidance_step(self, x_t: torch.Tensor, x_0_hat: torch.Tensor):
+        """Update the latent code using the physical guidance.
+        
+        Parameters
+        ----------
+        x_t: torch.Tensor
+            The noisy image at time step t.
+        x_0_hat: torch.Tensor
+            The estimated noise-free image at time step 0.
+        """
+        orig_dtype = x_t.dtype
+        x_0_hat = x_0_hat.to(torch.float32)
+        x_t = x_t.to(torch.float32)
+        if self.options.physical_guidance_method == api.enums.PhysicalGuidanceMethods.SCORE:
+            score = self.calculate_physical_guidance_score(x_0_hat)
+            x_t = x_t - self.options.physical_guidance_scale * score
+        elif self.options.physical_guidance_method == api.enums.PhysicalGuidanceMethods.RESAMPLE:
+            raise ValueError("Resampling is not supported for pixel-space diffusion.")
+        else:
+            raise ValueError(f"Invalid physical guidance method: {self.options.physical_guidance_method}")
+        return x_t.to(orig_dtype)
 
 
 class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
@@ -321,6 +392,20 @@ class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
     ):
         super().__init__(parameter_group, dataset, model_loader, options, *args, **kwargs)
         self.pipes = None
+        self.dataset_full_res = None
+        self.probe_data_full_res = None
+        self.positions_full_res = None
+        self.pixel_size_full_res = None
+        
+    def build(self):
+        super().build()
+        self.create_copy_dataset()
+        
+    def create_copy_dataset(self):
+        self.dataset_full_res = copy.deepcopy(self.dataset)
+        self.probe_data_full_res = self.parameter_group.probe.data
+        self.positions_full_res = self.parameter_group.probe_positions.data
+        self.pixel_size_full_res = self.parameter_group.object.pixel_size_m
         
     def build_pipe(self):
         self.model_loader.load()
@@ -332,6 +417,52 @@ class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
                 pipe.vae = pipe.vae.to(torch.float32)
             self.pipes[i] = pipe.to("cuda")
             
+    def downscale_data(self, factor: int):
+        """
+        Downscale the diffraction pattern data, probe, and positions 
+        to cope with the resolution of the current stage of DeepFloyd IF. 
+        The data are assumed to be measured at far-field, so the they 
+        are cropped instead of zoomed.
+        
+        This function replaces `self.dataset` with a downscaled version.
+        
+        Parameters
+        ----------
+        factor: int
+            The factor by which the data are downscaled.
+        """
+        self.dataset = copy.deepcopy(self.dataset_full_res)
+        patterns = ip.central_crop(
+            self.dataset.patterns,
+            (self.dataset.patterns.shape[-2] // factor, self.dataset.patterns.shape[-1] // factor)
+        )
+        self.dataset.patterns = patterns
+        
+        probe_downscaled_real = F.interpolate(
+            self.probe_data_full_res.real,
+            (self.probe_data_full_res.shape[-2] // factor, self.probe_data_full_res.shape[-1] // factor), 
+            mode="bilinear", 
+            align_corners=True
+        )
+        probe_downscaled_imag = F.interpolate(
+            self.probe_data_full_res.imag,
+            (self.probe_data_full_res.shape[-2] // factor, self.probe_data_full_res.shape[-1] // factor), 
+            mode="bilinear", 
+            align_corners=True
+        )
+        self.parameter_group.probe = Probe(
+            data=probe_downscaled_real + 1j * probe_downscaled_imag,
+            options=self.parameter_group.probe.options
+        )
+        
+        positions_downscaled = self.positions_full_res / factor
+        self.parameter_group.probe_positions.set_data(positions_downscaled)
+        
+        self.parameter_group.object.pixel_size_m = self.pixel_size_full_res * factor
+        
+        self.build_forward_model()
+        self.build_dataloader()
+        
     def encode_prompt_dfif(
         self, 
         pipe: diffusers.DiffusionPipeline, 
@@ -451,7 +582,10 @@ class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
         prompt_embeds: torch.Tensor, 
         negative_embeds: torch.Tensor
     ):
+        self.pbar.reset()
         pipe = self.pipes[0]
+        
+        self.downscale_data(16)
         
         self.encode_prompt_dfif(pipe, prompt=None, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_embeds)
         
@@ -471,6 +605,11 @@ class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
         for self.current_denoise_step, t in enumerate(pipe.scheduler.timesteps):
             x, x_0_hat = self.denoise_step_dfif(pipe, x, t)
             
+            if self.do_physical_guidance(self.current_denoise_step, pipe):
+                x = self.physical_guidance_step(x, x_0_hat)
+                
+            self.pbar.update(1)
+            
         return x
     
     def run_stage_2(
@@ -480,7 +619,10 @@ class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
         negative_embeds: torch.Tensor = None,
         noise_level: float = 250
     ):
+        self.pbar.reset()
         pipe = self.pipes[1]
+        
+        self.downscale_data(4)
         
         self.encode_prompt_dfif(pipe, prompt=None, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_embeds)
         
@@ -502,9 +644,15 @@ class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
         for self.current_denoise_step, t in enumerate(pipe.scheduler.timesteps):
             x, x_0_hat = self.denoise_step_dfif(pipe, x, t, cond_image=upscaled, noise_level=noise_level)
             
+            if self.do_physical_guidance(self.current_denoise_step, pipe):
+                x = self.physical_guidance_step(x, x_0_hat)
+            
+            self.pbar.update(1)
+            
         return x
     
     def run_stage_3(self, image: torch.Tensor, noise_level: float = 100):
+        self.pbar.reset()
         pipe = self.pipes[2]
         
         prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
@@ -577,6 +725,8 @@ class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
 
             # compute the previous noisy sample x_t -> x_t-1
             z = pipe.scheduler.step(noise_pred, t, z, return_dict=False)[0]
+            
+            self.pbar.update(1)
             
         z = z.to(pipe.vae.dtype)
         image = pipe.vae.decode(z / pipe.vae.config.scaling_factor, return_dict=False)[0]
