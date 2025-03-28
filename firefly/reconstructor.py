@@ -133,7 +133,9 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         """
         if pipe is None:
             pipe = self.pipe
-        if self.options.physical_guidance_scale <= 0:
+        if (self.options.physical_guidance_scale <= 0 
+            and self.options.physical_guidance_method == api.enums.PhysicalGuidanceMethods.SCORE
+        ):
             return False
         else:
             if (
