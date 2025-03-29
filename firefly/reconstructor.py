@@ -1157,6 +1157,9 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
                     batch_loss = self.loss_function(
                         y_pred[:, self.dataset.valid_pixel_mask], y_true[:, self.dataset.valid_pixel_mask]
                     )
+                    if self.options.resample_options.frequency_loss_weight > 0:
+                        frequency_loss = self.frequency_loss(o_hat)
+                        batch_loss = batch_loss + self.options.resample_options.frequency_loss_weight * frequency_loss
                     batch_loss.backward(retain_graph=True)
                     z_optimizer.step()
                     self.step_all_optimizers()
@@ -1167,6 +1170,22 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         z = z.detach()
         return z
     
+    def frequency_loss(self, o_hat: torch.Tensor):
+        """Calculate the loss term that promotes power in high-frequency regime.
+        
+        Parameters
+        ----------
+        o_hat: torch.Tensor
+            A (1, h, w) complex tensor giving the object.
+        """
+        window = torch.outer(
+            torch.hamming_window(o_hat.shape[1], True, 0.5, 0.5, device=o_hat.device),
+            torch.hamming_window(o_hat.shape[2], True, 0.5, 0.5, device=o_hat.device)
+        )
+        window = torch.fft.ifftshift(1 - window)
+        power = (torch.fft.fft2(o_hat).abs() ** 2) * window
+        return -power.mean()        
+        
     def stochastic_resample(self, denoising_step: int, z_0_hat: torch.Tensor, z_t_prime: torch.Tensor):
         """Stochastically resample the latent code.
         

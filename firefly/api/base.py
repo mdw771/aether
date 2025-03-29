@@ -19,6 +19,9 @@ class ResampleOptions(pcapi.options.base.Options):
     
     step_size: float = 1e-3
     """The learning rate."""
+    
+    frequency_loss_weight: float = 0
+    """Weight of the loss term that promotes power in high-frequency regime."""
 
 
 @dataclass
