@@ -1,4 +1,4 @@
-from .base import (
+from .options.base import (
     GuidedDiffusionOptions,
     GuidedDiffusionReconstructorOptions,
     GuidedDiffusionObjectOptions,
@@ -7,4 +7,4 @@ from .base import (
     GuidedDiffusionOPRModeWeightsOptions,
 )
 from .task import GuidedDiffusionPtychographyTask
-import firefly.api.enums
+import firefly.api.enums as enums
