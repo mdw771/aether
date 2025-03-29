@@ -7,7 +7,7 @@ from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 from ptychi.data_structures.object import PlanarObject
 from ptychi.utils import to_tensor
 
-from firefly.reconstructor import (
+from firefly.reconstructors.guided_sampling import (
     GuidedLatentDiffusionReconstructor, 
     GuidedLatentFlowMatchingReconstructor, 
     GuidedDeepFloydIFReconstructor
