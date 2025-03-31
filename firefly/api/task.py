@@ -10,7 +10,10 @@ from ptychi.utils import to_tensor
 from firefly.reconstructors.guided_sampling import (
     GuidedLatentDiffusionReconstructor, 
     GuidedLatentFlowMatchingReconstructor, 
-    GuidedDeepFloydIFReconstructor
+    GuidedDeepFloydIFReconstructor,
+)
+from firefly.reconstructors.alt_proj import (
+    AlternatingProjectionReconstructor
 )
 import firefly.io as fio
 
@@ -18,7 +21,7 @@ import firefly.io as fio
 logger = logging.getLogger(__name__)
 
 
-class GuidedDiffusionPtychographyTask(PtychographyTask):
+class BaseDiffusionPtychographyTask(PtychographyTask):
     
     def __init__(self, options: PtychographyTaskOptions):
         self.model_loader = None
@@ -39,6 +42,10 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
         self.object.optimizable = False
         
     def build_model_loader(self):
+        if isinstance(self, AlternatingProjectionDiffusionPtychographyTask):
+            img2img = True
+        else:
+            img2img = False
         if "deepfloyd" in self.reconstructor_options.model_path.lower():
             logger.warning(
                 "DeepFloyd will be loaded from default locations and with default variants. "
@@ -46,13 +53,15 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
             )
             self.model_loader = fio.HuggingFaceDeepFloydIFModelLoader(
                 device=torch.get_default_device(),
+                img2img=img2img,
             )
         else:
             self.model_loader = fio.HuggingFaceStableDiffusionModelLoader(
                 model_path=self.reconstructor_options.model_path,
                 device=torch.get_default_device(),
+                img2img=img2img,
             )
-        
+            
     def build_reconstructor(self):
         par_group = PtychographyParameterGroup(
             object=self.object,
@@ -71,6 +80,9 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
             options=self.reconstructor_options,
         )
         self.reconstructor.build()
+
+
+class GuidedDiffusionPtychographyTask(BaseDiffusionPtychographyTask):
         
     def get_reconstructor_class(self):
         if "stable-diffusion-3" in self.reconstructor_options.model_path.lower():
@@ -79,3 +91,9 @@ class GuidedDiffusionPtychographyTask(PtychographyTask):
             return GuidedDeepFloydIFReconstructor
         else:
             return GuidedLatentDiffusionReconstructor
+
+
+class AlternatingProjectionDiffusionPtychographyTask(BaseDiffusionPtychographyTask):
+        
+    def get_reconstructor_class(self):
+        return AlternatingProjectionReconstructor

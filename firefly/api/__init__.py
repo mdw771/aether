@@ -1,4 +1,4 @@
-from .options.base import (
+from .options.guided_sampling import (
     GuidedDiffusionOptions,
     GuidedDiffusionReconstructorOptions,
     GuidedDiffusionObjectOptions,
@@ -6,5 +6,16 @@ from .options.base import (
     GuidedDiffusionProbePositionOptions,
     GuidedDiffusionOPRModeWeightsOptions,
 )
-from .task import GuidedDiffusionPtychographyTask
+from .options.alt_proj import (
+    AlternatingProjectionOptions,
+    AlternatingProjectionReconstructorOptions,
+    AlternatingProjectionObjectOptions,
+    AlternatingProjectionProbeOptions,
+    AlternatingProjectionProbePositionOptions,
+    AlternatingProjectionOPRModeWeightsOptions,
+)
+from .task import (
+    GuidedDiffusionPtychographyTask, 
+    AlternatingProjectionDiffusionPtychographyTask
+)
 import firefly.api.enums as enums

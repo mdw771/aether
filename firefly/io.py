@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class ModelLoader:
-    def __init__(self, device: str = "cuda", *args, **kwargs):
+    def __init__(self, img2img: bool = False, device: str = "cuda", *args, **kwargs):
         self.device = device
-    
+        self.img2img = img2img
+        
     @staticmethod
     def get_local_model_repository_path():
         return os.path.join(firefly.__path__[0], os.pardir, "models")
@@ -51,17 +52,29 @@ class HuggingFaceModelLoader(ModelLoader):
                 
     def load_local_model(self):
         with util.ignore_default_device():
-            self.pipe = diffusers.DiffusionPipeline.from_pretrained(
-                self.local_model_path,
-                **self.pipe_kwargs
-            )
+            if self.img2img:
+                self.pipe = diffusers.AutoPipelineForImage2Image.from_pretrained(
+                    self.local_model_path,
+                    **self.pipe_kwargs
+                )
+            else:
+                self.pipe = diffusers.DiffusionPipeline.from_pretrained(
+                    self.local_model_path,
+                    **self.pipe_kwargs
+                )
     
     def download_model(self):
         with util.ignore_default_device():
-            self.pipe = diffusers.DiffusionPipeline.from_pretrained(
-                self.model_path,
-                **self.pipe_kwargs
-            )
+            if self.img2img:
+                self.pipe = diffusers.AutoPipelineForImage2Image.from_pretrained(
+                    self.model_path,
+                    **self.pipe_kwargs
+                )
+            else:
+                self.pipe = diffusers.DiffusionPipeline.from_pretrained(
+                    self.model_path,
+                    **self.pipe_kwargs
+                )
     
     def save_model(self):
         raise NotImplementedError("Model saving is not implemented")
@@ -106,17 +119,29 @@ class HuggingFaceStableDiffusionModelLoader(HuggingFaceModelLoader):
         
     def load_local_model(self):
         with util.ignore_default_device():
-            self.pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
-                self.local_model_path,
-                **self.pipe_kwargs
-            )
+            if self.img2img:
+                self.pipe = diffusers.AutoPipelineForImage2Image.from_pretrained(
+                    self.local_model_path,
+                    **self.pipe_kwargs
+                )
+            else:
+                self.pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
+                    self.local_model_path,
+                    **self.pipe_kwargs
+                )
         
     def download_model(self):
         with util.ignore_default_device():
-            self.pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
-                self.model_path,
-                **self.pipe_kwargs
-            )
+            if self.img2img:
+                self.pipe = diffusers.AutoPipelineForImage2Image.from_pretrained(
+                    self.model_path,
+                    **self.pipe_kwargs
+                )
+            else:
+                self.pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
+                    self.model_path,
+                    **self.pipe_kwargs
+                )
 
     def save_model(self):
         self.pipe.save_pretrained(self.local_model_path)
