@@ -49,6 +49,12 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     forward_model_class: pcapi.enums.ForwardModels = pcapi.enums.ForwardModels.PLANAR_PTYCHOGRAPHY
     """The forward model to use for physical guidance"""
     
+    use_admm: bool = True
+    """If True, the algorithm uses variable splitting and solves the object using ADMM.
+    Otherwise, an alternating projection algorithm is used where it keeps only one primal
+    variable.
+    """
+    
     def get_reconstructor_type(self):
         return "alternating_projection"
     

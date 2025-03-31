@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
+    
+    options: api.AlternatingProjectionReconstructorOptions
 
     def __init__(
         self,
@@ -149,9 +151,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             )
         self.forward_model.object.tensor.data = torch.stack([o_hat.real, o_hat.imag], dim=-1)
         
-    def project_to_data(self):
-        x_tilde = self.v - self.u
-        
+    def project_to_data(self):        
         self.x = self.x.requires_grad_(True)
         optimizer = torch.optim.Adam([self.x], lr=1e-3)
         
@@ -170,8 +170,9 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                     )
                                         
                     # Proximal term.
-                    reg_prox = self.options.proximal_penalty / 2 * (self.x - x_tilde).norm() ** 2
-                    batch_loss += reg_prox
+                    if self.options.proximal_penalty > 0 and self.options.use_admm: 
+                        reg_prox = self.options.proximal_penalty / 2 * (self.x - self.v - self.u).norm() ** 2
+                        batch_loss += reg_prox
 
                     batch_loss.backward(retain_graph=True)
                     self.run_post_differentiation_hooks(input_data, y_true)
@@ -185,7 +186,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.x = self.x.detach()
     
     def project_to_prior(self):
-        img = self.object_to_image(self.x)
+        if self.options.use_admm:
+            input = self.x - self.u
+        else:
+            input = self.x
+        img = self.object_to_image(input)
         img = self.image_normalizer.normalize(img)
         img = self.pipe(
             prompt=self.options.prompt,
@@ -199,11 +204,14 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         img = img / 255.0
         img = img.permute(2, 0, 1)[None, ...]
         img = self.image_normalizer.unnormalize(img)
-        self.x = self.image_to_object(img)
+        if self.options.use_admm:
+            self.v = self.image_to_object(img)
+        else:
+            self.x = self.image_to_object(img)
     
     def update_dual(self):
-        # self.u = self.u + self.x - self.v
-        pass
+        if self.options.use_admm:
+            self.u = self.u + self.v - self.x
         
     def run_admm_epoch(self):
         self.project_to_data()
