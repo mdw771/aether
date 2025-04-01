@@ -233,3 +233,4 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                 # self.run_pre_epoch_hooks()
                 self.run_admm_epoch()
                 self.pbar.update(1)
+                self.current_epoch += 1
