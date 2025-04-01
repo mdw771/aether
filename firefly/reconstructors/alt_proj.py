@@ -30,6 +30,14 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         options: "api.GuidedDiffusionReconstructorOptions",
         *args, **kwargs
     ):
+        """
+        The alternating projection reconstructor. This algorithm uses a relaxed ADMM
+        algorithm to integrate analytical solver and a img2img diffusion model. The
+        relaxed ADMM can optionally reduce to alternating projection. 
+        
+        The conventions of ADMM are based on https://engineering.purdue.edu/~bouman/Plug-and-Play/webdocs/GlobalSIP2013a.pdf;
+        the relaxed ADMM algorithm is based on https://arxiv.org/abs/1704.02712.
+        """
         super().__init__(parameter_group, dataset=dataset, options=options, *args, **kwargs)
         self.check_inputs()
         
@@ -151,15 +159,19 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             )
         self.forward_model.object.tensor.data = torch.stack([o_hat.real, o_hat.imag], dim=-1)
         
-    def project_to_data(self):        
-        self.x = self.x.requires_grad_(True)
-        optimizer = torch.optim.Adam([self.x], lr=1e-3)
+    def project_to_data(self):
+        if self.current_epoch == 0:
+            x = self.x
+        else:
+            x = self.v - self.u
+        x = x.requires_grad_(True)
+        optimizer = torch.optim.Adam([x], lr=1e-3)
         
         with torch.enable_grad():            
             for i_data_proj_epoch in range(self.options.num_data_projection_epochs):
                 for batch_data in self.dataloader:
-                    self.x.grad = None
-                    self.set_object_data_to_forward_model(self.x)
+                    x.grad = None
+                    self.set_object_data_to_forward_model(x)
                     
                     input_data, y_true = self.prepare_batch_data(batch_data)
                     y_pred = self.forward_model(*input_data)
@@ -170,8 +182,10 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                     )
                                         
                     # Proximal term.
-                    if self.options.proximal_penalty > 0 and self.options.use_admm: 
-                        reg_prox = self.options.proximal_penalty / 2 * (self.x - self.v - self.u).norm() ** 2
+                    if self.options.proximal_penalty > 0: 
+                        reg_prox = self.options.proximal_penalty / 2 * (
+                            x - self.v + self.u / self.options.proximal_penalty
+                        ).norm() ** 2
                         batch_loss += reg_prox
 
                     batch_loss.backward(retain_graph=True)
@@ -183,13 +197,10 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                     self.loss_tracker.update_batch_loss_with_value(batch_loss.item())
                 self.loss_tracker.conclude_epoch()
                 self.loss_tracker.print_latest()
-        self.x = self.x.detach()
+        self.x = x.detach()
     
     def project_to_prior(self):
-        if self.options.use_admm:
-            input = self.x - self.u
-        else:
-            input = self.x
+        input = self.x + self.u
         img = self.object_to_image(input)
         img = self.image_normalizer.normalize(img)
         img = self.pipe(
@@ -204,14 +215,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         img = img / 255.0
         img = img.permute(2, 0, 1)[None, ...]
         img = self.image_normalizer.unnormalize(img)
-        if self.options.use_admm:
-            self.v = self.image_to_object(img)
-        else:
-            self.x = self.image_to_object(img)
+        v = self.image_to_object(img)
+        self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
     
     def update_dual(self):
-        if self.options.use_admm:
-            self.u = self.u + self.v - self.x
+        self.u = self.u + self.options.proximal_penalty * (self.x - self.v)
         
     def run_admm_epoch(self):
         self.project_to_data()

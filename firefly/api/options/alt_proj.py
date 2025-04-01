@@ -44,16 +44,19 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     """The number of epochs for data projection."""
     
     proximal_penalty: float = 1.0
-    """The penalty for the proximal term in calculating the projections."""
+    """The penalty for the proximal term in calculating the projections. This is the
+    `tau` in https://arxiv.org/abs/1704.02712. ADMM reduces to alternating projection 
+    when `proximal_penalty == 0` and `update_relaxation == 1`.
+    """
+    
+    update_relaxation: float = 1.0
+    """The relaxation factor in ADMM. This is the `gamma` in https://arxiv.org/abs/1704.02712.
+    ADMM reduces to alternating projection when `proximal_penalty == 0` and 
+    `update_relaxation == 1`.
+    """
     
     forward_model_class: pcapi.enums.ForwardModels = pcapi.enums.ForwardModels.PLANAR_PTYCHOGRAPHY
     """The forward model to use for physical guidance"""
-    
-    use_admm: bool = True
-    """If True, the algorithm uses variable splitting and solves the object using ADMM.
-    Otherwise, an alternating projection algorithm is used where it keeps only one primal
-    variable.
-    """
     
     def get_reconstructor_type(self):
         return "alternating_projection"
