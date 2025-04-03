@@ -1168,8 +1168,9 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
                     z_optimizer.step()
                     self.step_all_optimizers()
                     self.forward_model.zero_grad()
-                    epoch_loss += batch_loss.item()
-                logger.info(f"z-optimization epoch {i} loss: {epoch_loss / len(self.dataloader)}")
+                    self.loss_tracker.update_batch_loss_with_value(batch_loss.item())
+                self.loss_tracker.conclude_epoch()
+                self.loss_tracker.print_latest()
         
         z = z.detach()
         return z
@@ -1222,8 +1223,9 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
                     optimizer.step()
                     self.step_all_optimizers()
                     self.forward_model.zero_grad()
-                    epoch_loss += batch_loss.item()
-                logger.info(f"x-optimization epoch {i} loss: {epoch_loss / len(self.dataloader)}")
+                    self.loss_tracker.update_batch_loss_with_value(batch_loss.item())
+                self.loss_tracker.conclude_epoch()
+                self.loss_tracker.print_latest()
         
         x = x.detach()
         z = self.encode_image(x)
