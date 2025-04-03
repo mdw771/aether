@@ -55,6 +55,12 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     `update_relaxation == 1`.
     """
     
+    use_prior_projected_data_as_final_result: bool = True
+    """If True, the object data at the end of the reconstruction is set to the data after
+    prior projection (v). Otherwise, it will be set to the data after data projection (x),
+    i.e., the step before prior projection.
+    """
+    
     forward_model_class: pcapi.enums.ForwardModels = pcapi.enums.ForwardModels.PLANAR_PTYCHOGRAPHY
     """The forward model to use for physical guidance"""
     

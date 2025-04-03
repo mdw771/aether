@@ -158,6 +158,12 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                 "`data_as_parameter=False`."
             )
         self.forward_model.object.tensor.data = torch.stack([o_hat.real, o_hat.imag], dim=-1)
+    
+    def sync_data_to_object(self):
+        if self.options.use_prior_projected_data_as_final_result:
+            self.parameter_group.object.set_data(self.v)
+        else:
+            self.parameter_group.object.set_data(self.x)
         
     def project_to_data(self):
         if self.current_epoch == 0:
@@ -230,7 +236,8 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         n_epochs = self.options.num_epochs if n_epochs is None else n_epochs
         with torch.no_grad():
             for _ in range(n_epochs):
-                # self.run_pre_epoch_hooks()
                 self.run_admm_epoch()
+                self.sync_data_to_object()
+                
                 self.pbar.update(1)
                 self.current_epoch += 1
