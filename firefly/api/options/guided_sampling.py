@@ -22,6 +22,12 @@ class ResampleOptions(pcapi.options.base.Options):
     
     frequency_loss_weight: float = 0
     """Weight of the loss term that promotes power in high-frequency regime."""
+    
+    optimize_against_latent: bool = False
+    """If True, inner optimization is done against the latent code $\hat{z}_0$, with gradient
+    backpropagating through the decoder. Otherwise, the latent is decoded, and the optimization
+    is done against the image which is then encoded back to the latent space.
+    """
 
 
 @dataclass
