@@ -1148,6 +1148,7 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             for i in range(self.options.resample_options.num_z_optimization_epochs):
                 epoch_loss = 0
                 for batch_data in self.dataloader:
+                    z.grad = None
                     decoded_image = self.decode_latent(z)
                     o_hat = self.image_to_object(decoded_image)
                     self.set_object_data_to_forward_model(o_hat)
