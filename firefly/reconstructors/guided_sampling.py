@@ -7,7 +7,7 @@ import diffusers
 from PIL import Image
 import torch
 import torch.nn.functional as F
-from diffusers import StableDiffusion3Pipeline, StableDiffusionXLPipeline, IFPipeline
+from diffusers import StableDiffusion3Pipeline, StableDiffusionXLPipeline
 from ptychi.reconstructors.ad_ptychography import AutodiffPtychographyReconstructor
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 from ptychi.data_structures.probe import Probe
@@ -17,7 +17,7 @@ import ptychi.image_proc as ip
 
 import firefly.maths as maths
 import firefly.api as api
-from firefly.io import HuggingFaceStableDiffusionModelLoader
+from firefly.io import HuggingFaceModelLoader
 import firefly.maps as maps
 import firefly.util as util
 
@@ -39,7 +39,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         self,
         parameter_group: PtychographyParameterGroup,
         dataset: PtychographyDataset,
-        model_loader: HuggingFaceStableDiffusionModelLoader,
+        model_loader: HuggingFaceModelLoader,
         options: "api.GuidedDiffusionReconstructorOptions",
         *args, **kwargs
     ):
@@ -388,7 +388,7 @@ class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
         self,
         parameter_group: PtychographyParameterGroup,
         dataset: PtychographyDataset,
-        model_loader: HuggingFaceStableDiffusionModelLoader,
+        model_loader: HuggingFaceModelLoader,
         options: "api.GuidedDiffusionReconstructorOptions",
         *args, **kwargs
     ):
@@ -751,7 +751,7 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         self,
         parameter_group: PtychographyParameterGroup,
         dataset: PtychographyDataset,
-        model_loader: HuggingFaceStableDiffusionModelLoader,
+        model_loader: HuggingFaceModelLoader,
         options: "api.GuidedDiffusionReconstructorOptions",
         *args, **kwargs
     ):

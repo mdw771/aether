@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 import ptychi.api as pcapi
 import firefly.api.enums as enums
@@ -7,23 +7,16 @@ import firefly.api.enums as enums
 
 @dataclass
 class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.AutodiffPtychographyReconstructorOptions):
-    prompt: str = ""
-    """The prompt to use for the guided sampling."""
+    editing_prompt: Union[str, list[str]] = ""
+    """The prompts of the concepts for the image editing model to add or remove."""
     
-    negative_prompt: Optional[str] = None
-    """The negative prompt to use for the guided sampling."""
-    
-    text_guidance_scale: float = 4.5
-    """The guidance scale to use for the guided sampling."""
-    
-    physical_guidance_scale: float = 0.1
-    """The guidance scale to use for the physical guidance."""
-    
-    prior_strength: float = 0.5
-    """The strength of the prior during the prior projection step. This should
-    be a value between 0 and 1. 0 means no prior is used. 1 means the prior
-    is at full power and the input image is effectively ignored.
+    remove_concept: bool = True
+    """If True, the concept in the prompt will be removed from the image. Otherwise, 
+    it will be added.
     """
+    
+    text_guidance_scale: float = 7
+    """The guidance scale to use for the guided sampling."""
     
     loss_function: pcapi.enums.LossFunctions = pcapi.enums.LossFunctions.MSE_SQRT
     """The loss function to calculate physical guidance."""
@@ -31,11 +24,8 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     num_inference_steps: int = 50
     """The number of inference steps to use for the guided sampling."""
     
-    model_path: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    model_path: str = "stable-diffusion-v1-5/stable-diffusion-v1-5"
     """The path to the model to use for the guided sampling."""
-    
-    noise_scheduler: enums.NoiseSchedulers = None
-    """The noise scheduler to use for the guided sampling."""
     
     num_epochs: int = 20
     """The number of outer epochs."""

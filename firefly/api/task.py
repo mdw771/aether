@@ -7,6 +7,7 @@ from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 from ptychi.data_structures.object import PlanarObject
 from ptychi.utils import to_tensor
 
+import diffusers
 from firefly.reconstructors.guided_sampling import (
     GuidedLatentDiffusionReconstructor, 
     GuidedLatentFlowMatchingReconstructor, 
@@ -56,12 +57,18 @@ class BaseDiffusionPtychographyTask(PtychographyTask):
                 img2img=img2img,
             )
         else:
-            self.model_loader = fio.HuggingFaceStableDiffusionModelLoader(
+            if isinstance(self, AlternatingProjectionDiffusionPtychographyTask):
+                pipe_class = diffusers.LEditsPPPipelineStableDiffusion
+            else:
+                pipe_class = diffusers.DiffusionPipeline
+            self.model_loader = fio.HuggingFaceModelLoader(
                 model_path=self.reconstructor_options.model_path,
                 device=torch.get_default_device(),
                 img2img=img2img,
+                pipe_class=pipe_class,
+                pipe_kwargs={"torch_dtype": torch.float16}
             )
-            
+
     def build_reconstructor(self):
         par_group = PtychographyParameterGroup(
             object=self.object,

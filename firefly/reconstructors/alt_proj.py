@@ -3,7 +3,7 @@ import logging
 
 import numpy as np
 import torch
-from diffusers import StableDiffusionXLPipeline
+from diffusers import LEditsPPPipelineStableDiffusion
 from ptychi.reconstructors.ad_ptychography import AutodiffPtychographyReconstructor
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 import ptychi.maps as pcmaps
@@ -11,7 +11,7 @@ from ptychi.io_handles import PtychographyDataset
 
 import firefly.maths as maths
 import firefly.api as api
-from firefly.io import HuggingFaceStableDiffusionModelLoader
+from firefly.io import HuggingFaceModelLoader
 import firefly.image_proc as ip
 
 
@@ -21,12 +21,13 @@ logger = logging.getLogger(__name__)
 class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
     
     options: api.AlternatingProjectionReconstructorOptions
+    pipe: LEditsPPPipelineStableDiffusion
 
     def __init__(
         self,
         parameter_group: PtychographyParameterGroup,
         dataset: PtychographyDataset,
-        model_loader: HuggingFaceStableDiffusionModelLoader,
+        model_loader: HuggingFaceModelLoader,
         options: "api.GuidedDiffusionReconstructorOptions",
         *args, **kwargs
     ):
@@ -42,7 +43,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.check_inputs()
         
         self.model_loader = model_loader
-        self.pipe: StableDiffusionXLPipeline = None
+        self.pipe: LEditsPPPipelineStableDiffusion = None
         self.loss_function = pcmaps.get_loss_function_by_enum(options.loss_function)()
         self.forward_model = None
                 
@@ -59,6 +60,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
     def build_pipe(self):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
+        self.pipe.to("cuda")
         
     def build_forward_model(self):
         self.forward_model_params["wavelength_m"] = self.dataset.wavelength_m
@@ -208,15 +210,25 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
     def project_to_prior(self):
         input = self.x + self.u
         img = self.object_to_image(input)
-        img = self.image_normalizer.normalize(img)
-        img = self.pipe(
-            prompt=self.options.prompt,
+        img = self.image_normalizer.normalize(img.float()).to(self.pipe.unet.dtype)
+        
+        _ = self.pipe.invert(
             image=img,
-            strength=self.options.prior_strength,
-            num_inference_steps=self.options.num_inference_steps,
-            guidance_scale=self.options.text_guidance_scale,
-            negative_prompt=self.options.negative_prompt,
+            num_inversion_steps=50,
+            skip=0.1
         )
+        
+        if isinstance(self.options.editing_prompt, str):
+            editing_prompt = [self.options.editing_prompt]
+        else:
+            editing_prompt = self.options.editing_prompt
+        img = self.pipe(
+            editing_prompt=editing_prompt,
+            reverse_editing_direction=self.options.remove_concept,
+            edit_guidance_scale=self.options.text_guidance_scale,
+            edit_threshold=0.75,
+        )
+        
         img = torch.tensor(np.array(img.images[0]), dtype=self.x.real.dtype, device=self.x.device)
         img = img / 255.0
         img = img.permute(2, 0, 1)[None, ...]

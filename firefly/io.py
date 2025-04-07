@@ -23,7 +23,13 @@ class ModelLoader:
     
 
 class HuggingFaceModelLoader(ModelLoader):
-    def __init__(self, model_path: str, pipe_kwargs: Optional[dict] = None, *args, **kwargs):
+    def __init__(
+        self, 
+        model_path: str, 
+        pipe_class: type[diffusers.DiffusionPipeline] = diffusers.DiffusionPipeline,
+        pipe_kwargs: Optional[dict] = None, 
+        *args, **kwargs
+    ):
         """HuggingFace model loader.
         
         Parameters
@@ -38,6 +44,7 @@ class HuggingFaceModelLoader(ModelLoader):
         """
         super().__init__(*args, **kwargs)
         self.model_path = model_path
+        self.pipe_class = pipe_class
         self.pipe_kwargs = pipe_kwargs if pipe_kwargs is not None else {}
         self.local_model_path = os.path.join(self.get_local_model_repository_path(), self.model_path)
         
@@ -49,35 +56,24 @@ class HuggingFaceModelLoader(ModelLoader):
             logger.info(f"Downloading model from Hugging Face to {self.model_path}")
             self.download_model()
             self.save_model()
+        self.pipe = self.pipe.to(self.device)
                 
     def load_local_model(self):
         with util.ignore_default_device():
-            if self.img2img:
-                self.pipe = diffusers.AutoPipelineForImage2Image.from_pretrained(
-                    self.local_model_path,
-                    **self.pipe_kwargs
-                )
-            else:
-                self.pipe = diffusers.DiffusionPipeline.from_pretrained(
-                    self.local_model_path,
-                    **self.pipe_kwargs
-                )
-    
+            self.pipe = self.pipe_class.from_pretrained(
+                self.local_model_path,
+                **self.pipe_kwargs
+            )
+
     def download_model(self):
         with util.ignore_default_device():
-            if self.img2img:
-                self.pipe = diffusers.AutoPipelineForImage2Image.from_pretrained(
-                    self.model_path,
-                    **self.pipe_kwargs
-                )
-            else:
-                self.pipe = diffusers.DiffusionPipeline.from_pretrained(
-                    self.model_path,
-                    **self.pipe_kwargs
-                )
+            self.pipe = self.pipe_class.from_pretrained(
+                self.model_path,
+                **self.pipe_kwargs
+            )
     
     def save_model(self):
-        raise NotImplementedError("Model saving is not implemented")
+        self.pipe.save_pretrained(self.local_model_path)
     
     
 class HuggingFaceMultiModelLoader(ModelLoader):
@@ -100,35 +96,6 @@ class HuggingFaceMultiModelLoader(ModelLoader):
             self.loaders.append(self.model_loader_classes[i](model_path, self.pipe_kwargs_list[i]))
             self.pipes.append(self.loaders[-1].pipe)
 
-
-class HuggingFaceStableDiffusionModelLoader(HuggingFaceModelLoader):
-    def __init__(
-        self, 
-        model_path: str = "stabilityai/stable-diffusion-3.5-medium",
-        pipe_kwargs: Optional[dict] = None,
-        *args, **kwargs
-    ):
-        super().__init__(model_path, pipe_kwargs, *args, **kwargs)
-        self.pipe = None
-        
-    def load(self) -> None:
-        super().load()
-        
-        self.pipe = self.pipe.to(self.device)
-        # self.pipe.enable_model_cpu_offload()
-        
-    def load_local_model(self):
-        with util.ignore_default_device():
-            if self.img2img:
-                self.pipe = diffusers.AutoPipelineForImage2Image.from_pretrained(
-                    self.local_model_path,
-                    **self.pipe_kwargs
-                )
-            else:
-                self.pipe = diffusers.AutoPipelineForText2Image.from_pretrained(
-                    self.local_model_path,
-                    **self.pipe_kwargs
-                )
         
     def download_model(self):
         with util.ignore_default_device():
@@ -144,29 +111,9 @@ class HuggingFaceStableDiffusionModelLoader(HuggingFaceModelLoader):
                 )
 
     def save_model(self):
-        self.pipe.save_pretrained(self.local_model_path)
-
-
-class HuggingFaceDeepFloydIFStageLoader(HuggingFaceModelLoader):
-    def __init__(self, model_path: str, stage: int, pipe_kwargs: Optional[dict] = None, *args, **kwargs):
-        super().__init__(model_path, pipe_kwargs, *args, **kwargs)
-        self.stage = stage
-        
-    def load(self) -> None:
-        super().load()
-        
-    def load_local_model(self):
-        with util.ignore_default_device():
-            self.pipe = diffusers.DiffusionPipeline.from_pretrained(
-                self.local_model_path,
-                **self.pipe_kwargs
-            )
-        
-    def download_model(self):
-        with util.ignore_default_device():
-            self.pipe = diffusers.DiffusionPipeline.from_pretrained(
-                self.model_path,
-                **self.pipe_kwargs
+        for i, pipe in enumerate(self.pipes):
+            pipe.save_pretrained(
+                os.path.join(self.get_local_model_repository_path(), self.model_paths[i])
             )
         
         
@@ -182,9 +129,9 @@ class HuggingFaceDeepFloydIFModelLoader(HuggingFaceMultiModelLoader):
                 "stabilityai/stable-diffusion-x4-upscaler"
             ), 
             model_loader_classes=(
-                HuggingFaceDeepFloydIFStageLoader, 
-                HuggingFaceDeepFloydIFStageLoader, 
-                HuggingFaceDeepFloydIFStageLoader
+                HuggingFaceModelLoader, 
+                HuggingFaceModelLoader, 
+                HuggingFaceModelLoader
             ),
             pipe_kwargs_list=(
                 {"torch_dtype": torch.float16},
@@ -219,18 +166,3 @@ class HuggingFaceDeepFloydIFModelLoader(HuggingFaceMultiModelLoader):
         
         self.pipes = [stage_1, stage_2, stage_3]
     
-
-if __name__ == "__main__":
-    model_loader = HuggingFaceDeepFloydIFModelLoader()
-    model_loader.load()
-    pipe = model_loader.pipes[0]
-
-    with torch.inference_mode():
-        image = pipe(
-            "A capybara holding a sign that reads Hello World",
-            num_inference_steps=40,
-            guidance_scale=4.5,
-        ).images[0]
-
-        # Save the generated image
-        image.show()
