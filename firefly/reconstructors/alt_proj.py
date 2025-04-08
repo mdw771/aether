@@ -192,7 +192,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                     # Proximal term.
                     if self.options.proximal_penalty > 0: 
                         reg_prox = self.options.proximal_penalty / 2 * (
-                            x - self.v + self.u / self.options.proximal_penalty
+                            x - self.v + self.u
                         ).norm() ** 2
                         batch_loss += reg_prox
 
@@ -243,7 +243,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
     
     def update_dual(self):
-        self.u = self.u + self.options.proximal_penalty * (self.x - self.v)
+        self.u = self.u + self.x - self.v
         
     def run_admm_epoch(self):
         self.project_to_data()
