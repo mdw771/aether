@@ -209,11 +209,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
     
     def project_to_prior(self):
         input = self.x + self.u
-        img = self.object_to_image(input)
-        img = self.image_normalizer.normalize(img.float()).to(self.pipe.unet.dtype)
+        orig_img = self.object_to_image(input)
+        orig_img = self.image_normalizer.normalize(orig_img.float()).to(self.pipe.unet.dtype)
         
         _ = self.pipe.invert(
-            image=img,
+            image=orig_img,
             num_inversion_steps=50,
             skip=0.1
         )
@@ -233,6 +233,12 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         img = img / 255.0
         img = img.permute(2, 0, 1)[None, ...]
         img = self.image_normalizer.unnormalize(img)
+        
+        # # Match mean and std within ROI.
+        if self.options.matched_stats_of_prior_projected_image:
+            bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
+            img = ip.match_mean_std(img, orig_img, (0, 0, *bbox))
+        
         v = self.image_to_object(img)
         self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
     

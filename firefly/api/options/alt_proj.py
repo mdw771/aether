@@ -51,6 +51,11 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     i.e., the step before prior projection.
     """
     
+    matched_stats_of_prior_projected_image: bool = False
+    """If True, after each prior projection, the mean and standard deviation of the 
+    prior-projected image will be matched to those of the data-projected image.
+    """
+    
     forward_model_class: pcapi.enums.ForwardModels = pcapi.enums.ForwardModels.PLANAR_PTYCHOGRAPHY
     """The forward model to use for physical guidance"""
     

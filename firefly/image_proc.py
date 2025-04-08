@@ -43,3 +43,13 @@ class ImageNormalizer:
             The unnormalized image.
         """
         return img * (self.max_val - self.min_val) + self.min_val
+
+
+def match_mean_std(img: torch.Tensor, reference: torch.Tensor, roi_slicer: tuple[slice, ...]):
+    """Match the mean and std of the image to the target mean and std within the ROI.
+    """
+    current_mean = img[roi_slicer].mean()
+    current_std = img[roi_slicer].std()
+    target_mean = reference[roi_slicer].mean()
+    target_std = reference[roi_slicer].std()
+    return (img - current_mean) * target_std / current_std + target_mean
