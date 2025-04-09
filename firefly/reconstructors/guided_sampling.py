@@ -20,6 +20,7 @@ import firefly.api as api
 from firefly.io import HuggingFaceModelLoader
 import firefly.maps as maps
 import firefly.util as util
+import firefly.image_proc as fip
 
 
 logger = logging.getLogger(__name__)
@@ -216,78 +217,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         phase = torch.stack(phase)
         phase = self.parameter_group.object.preconditioner * phase
         return phase
-    
-    def image_to_object(
-        self, 
-        img: torch.Tensor, 
-        representation: Literal["real_imag", "mag_phase"] = "mag_phase"
-    ) -> torch.Tensor:
-        """Convert a pixel-space image to a complex object tensor.
-        
-        Parameters
-        ----------
-        img: torch.Tensor
-            A (1, 3, h, w) tensor giving the decoded image.
-            
-        Returns
-        -------
-        torch.Tensor
-            A (1, h, w) tensor giving the complex object.
-        """
-        if img.shape[0] != 1:
-            raise ValueError("The length of the batch dimension of img must be 1.")
-        
-        if representation == "real_imag":
-            real = img[:, 0, ...] + img[:, 2, ...] * 0.5
-            imag = img[:, 1, ...] + img[:, 2, ...] * 0.5
-            obj = real + 1j * imag
-        elif representation == "mag_phase":
-            mag = 1
-            phase = img.mean(1)
-            obj = mag * torch.exp(1j * phase)
-        else:
-            raise ValueError(f"Invalid representation: {representation}")
-        obj = maths.TypeCastFunction.apply(obj, torch.complex64)
-        return obj
-    
-    def object_to_image(
-        self, 
-        obj: torch.Tensor, 
-        representation: Literal["real_imag", "mag_phase", "single_channel"] = "mag_phase"
-    ) -> torch.Tensor:
-        """Convert a complex object tensor to an image assumed by the encoder.
-        
-        Parameters
-        ----------
-        obj: torch.Tensor
-            A (1, h, w) tensor giving the complex object.
-            
-        Returns
-        -------
-        torch.Tensor
-            A (1, 3, h, w) tensor giving the image.
-        """
-        if representation == "real_imag":
-            img = torch.stack([
-                obj.real,
-                obj.imag,
-                0.5 * obj.real + 0.5 * obj.imag
-            ], dim=1)
-        elif representation == "mag_phase":
-            phase = obj.angle()
-            # phase = self.preconditioned_phase_unwrap(obj)
-            img = phase.unsqueeze(1)
-            img = img.repeat(1, 3, 1, 1)
-        elif representation == "single_channel":
-            if obj.dtype.is_complex:
-                raise ValueError("Single channel representation does not support complex numbers.")
-            img = obj.unsqueeze(1)
-            img = img.repeat(1, 3, 1, 1)
-        else:
-            raise ValueError(f"Invalid representation: {representation}")
-        img = img.to(self.pipe.dtype)
-        return img
-    
+
     def set_object_data_to_forward_model(self, o_hat: torch.Tensor):
         """Set object data to the object function object in the forward model. 
         We can't use object.set_data() here because it is an in-place operation
@@ -339,7 +269,7 @@ class GuidedPixelSpaceDiffusionReconstructor(GuidedDiffusionReconstructor):
         with torch.enable_grad():
             x = x.requires_grad_(True)
             
-            o_hat = self.image_to_object(x)
+            o_hat = fip.image_to_object(img_mag=1, img_phase=x)
             self.set_object_data_to_forward_model(o_hat)
             self.forward_model.object.update_pos_origin_coordinates()
             
@@ -1086,7 +1016,7 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             z = z.requires_grad_(True)
             
             decoded_image = self.decode_latent(z)
-            o_hat = self.image_to_object(decoded_image)
+            o_hat = fip.image_to_object(img_mag=1, img_phase=decoded_image)
             self.set_object_data_to_forward_model(o_hat)
             
             for batch_data in self.dataloader:
@@ -1169,7 +1099,7 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
                         z.grad = None
                         decoded_image = self.decode_latent(z)
 
-                    o_hat = self.image_to_object(decoded_image)
+                    o_hat = fip.image_to_object(img_mag=1, img_phase=decoded_image)
                     self.set_object_data_to_forward_model(o_hat)
                     
                     input_data, y_true = self.prepare_batch_data(batch_data)
@@ -1367,7 +1297,7 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         # Decode the final latents to image
         self.sampled_image = self.decode_latent(z.to(self.pipe.vae.dtype))
         self.sampled_image_pil = self.pipe.image_processor.postprocess(self.sampled_image, output_type="pil")[0]
-        self.parameter_group.object.set_data(self.image_to_object(self.sampled_image))
+        self.parameter_group.object.set_data(fip.image_to_object(img_mag=1, img_phase=self.sampled_image))
 
 
 class GuidedLatentFlowMatchingReconstructor(GuidedLatentDiffusionReconstructor):

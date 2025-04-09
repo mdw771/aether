@@ -77,72 +77,6 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.v = torch.zeros_like(self.x)
         self.u = torch.zeros_like(self.x)
         
-    def image_to_object(
-        self, 
-        img_mag: torch.Tensor = None, 
-        img_phase: torch.Tensor = None, 
-    ) -> torch.Tensor:
-        """Convert a pixel-space image to a complex object tensor.
-        
-        Parameters
-        ----------
-        img_mag: torch.Tensor
-            A (1, h, w) tensor giving the magnitude of the image.
-        img_phase: torch.Tensor
-            A (1, h, w) tensor giving the phase of the image.
-            
-        Returns
-        -------
-        torch.Tensor
-            A (1, h, w) tensor giving the complex object.
-        """
-        if img_mag is None and img_phase is None:
-            raise ValueError("Either img_mag or img_phase must be provided.")
-        
-        mag = 1 if img_mag is None else img_mag.mean(1)
-        phase = 0 if img_phase is None else img_phase.mean(1)
-        obj = mag * torch.exp(1j * phase)
-        obj = maths.TypeCastFunction.apply(obj, torch.complex64)
-        return obj
-    
-    def object_to_image(
-        self, 
-        obj: torch.Tensor, 
-        representation: Literal["real_imag", "mag_phase", "single_channel"] = "mag_phase"
-    ) -> torch.Tensor:
-        """Convert a complex object tensor to an image assumed by the encoder.
-        
-        Parameters
-        ----------
-        obj: torch.Tensor
-            A (1, h, w) tensor giving the complex object.
-            
-        Returns
-        -------
-        torch.Tensor
-            A (1, 3, h, w) tensor giving the image.
-        """
-        if representation == "real_imag":
-            img = torch.stack([
-                obj.real,
-                obj.imag,
-                0.5 * obj.real + 0.5 * obj.imag
-            ], dim=1)
-        elif representation == "mag_phase":
-            phase = obj.angle()
-            # phase = self.preconditioned_phase_unwrap(obj)
-            img = phase.unsqueeze(1)
-            img = img.repeat(1, 3, 1, 1)
-        elif representation == "single_channel":
-            if obj.dtype.is_complex:
-                raise ValueError("Single channel representation does not support complex numbers.")
-            img = obj.unsqueeze(1)
-            img = img.repeat(1, 3, 1, 1)
-        else:
-            raise ValueError(f"Invalid representation: {representation}")
-        img = img.to(self.pipe.dtype)
-        return img
-        
     def set_object_data_to_forward_model(self, o_hat: torch.Tensor):
         """Set object data to the object function object in the forward model. 
         We can't use object.set_data() here because it is an in-place operation
@@ -204,7 +138,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
     
     def project_to_prior(self):
         input = self.x + self.u
-        orig_img = self.object_to_image(input)
+        _, orig_img = ip.object_to_image(input, dtype=self.pipe.unet.dtype)
         orig_img = self.image_normalizer.normalize(orig_img.float()).to(self.pipe.unet.dtype)
         
         _ = self.pipe.invert(
@@ -224,17 +158,15 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             edit_threshold=0.75,
         )
         
-        img = torch.tensor(np.array(img.images[0]), dtype=self.x.real.dtype, device=self.x.device)
-        img = img / 255.0
-        img = img.permute(2, 0, 1)[None, ...]
+        img = ip.pil_image_to_tensor(img.images[0], dtype=self.x.real.dtype, device=self.x.device)
         img = self.image_normalizer.unnormalize(img)
         
-        # # Match mean and std within ROI.
+        # Match mean and std within ROI.
         if self.options.matched_stats_of_prior_projected_image:
             bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
             img = ip.match_mean_std(img, orig_img, (0, 0, *bbox))
         
-        v = self.image_to_object(img_mag=self.x.abs().unsqueeze(1).repeat(1, 3, 1, 1), img_phase=img)
+        v = ip.image_to_object(img_mag=self.x.abs().unsqueeze(1).repeat(1, 3, 1, 1), img_phase=img)
         self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
     
     def update_dual(self):
