@@ -79,34 +79,29 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         
     def image_to_object(
         self, 
-        img: torch.Tensor, 
-        representation: Literal["real_imag", "mag_phase"] = "mag_phase"
+        img_mag: torch.Tensor = None, 
+        img_phase: torch.Tensor = None, 
     ) -> torch.Tensor:
         """Convert a pixel-space image to a complex object tensor.
         
         Parameters
         ----------
-        img: torch.Tensor
-            A (1, 3, h, w) tensor giving the decoded image.
+        img_mag: torch.Tensor
+            A (1, h, w) tensor giving the magnitude of the image.
+        img_phase: torch.Tensor
+            A (1, h, w) tensor giving the phase of the image.
             
         Returns
         -------
         torch.Tensor
             A (1, h, w) tensor giving the complex object.
         """
-        if img.shape[0] != 1:
-            raise ValueError("The length of the batch dimension of img must be 1.")
+        if img_mag is None and img_phase is None:
+            raise ValueError("Either img_mag or img_phase must be provided.")
         
-        if representation == "real_imag":
-            real = img[:, 0, ...] + img[:, 2, ...] * 0.5
-            imag = img[:, 1, ...] + img[:, 2, ...] * 0.5
-            obj = real + 1j * imag
-        elif representation == "mag_phase":
-            mag = 1
-            phase = img.mean(1)
-            obj = mag * torch.exp(1j * phase)
-        else:
-            raise ValueError(f"Invalid representation: {representation}")
+        mag = 1 if img_mag is None else img_mag.mean(1)
+        phase = 0 if img_phase is None else img_phase.mean(1)
+        obj = mag * torch.exp(1j * phase)
         obj = maths.TypeCastFunction.apply(obj, torch.complex64)
         return obj
     
@@ -189,8 +184,8 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                         y_pred[:, self.dataset.valid_pixel_mask], y_true[:, self.dataset.valid_pixel_mask]
                     )
                                         
-                    # Proximal term.
-                    if self.options.proximal_penalty > 0: 
+                    # Proximal term (skipped for the first outer epoch).
+                    if self.options.proximal_penalty > 0 and self.current_epoch > 0: 
                         reg_prox = self.options.proximal_penalty / 2 * (
                             x - self.v + self.u
                         ).norm() ** 2
@@ -239,7 +234,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
             img = ip.match_mean_std(img, orig_img, (0, 0, *bbox))
         
-        v = self.image_to_object(img)
+        v = self.image_to_object(img_mag=self.x.abs().unsqueeze(1).repeat(1, 3, 1, 1), img_phase=img)
         self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
     
     def update_dual(self):
