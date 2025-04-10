@@ -704,6 +704,12 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         else:
             return self.options.proximal_penalty > 0
         
+    def resample_optimize_against_latent(self, current_denoise_step: int):
+        return current_denoise_step >= (
+            self.options.resample_options.optimization_space_dividing_point * \
+                self.options.num_inference_steps
+            )
+        
     def check_inputs(self):
         super().check_inputs()
         if self.parameter_group.object.optimizable:
@@ -829,7 +835,8 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             z_t = z_t - self.options.physical_guidance_scale * score
         elif self.options.physical_guidance_method == api.enums.PhysicalGuidanceMethods.RESAMPLE:
             z_0_hat = self.calculate_physical_guidance_optimization(
-                z_0_hat, optimize_against_latent=self.options.resample_options.optimize_against_latent
+                z_0_hat, 
+                optimize_against_latent=self.resample_optimize_against_latent(self.current_denoise_step)
             )
             z_t = self.stochastic_resample(self.current_denoise_step + 1, z_0_hat, z_t)
         else:

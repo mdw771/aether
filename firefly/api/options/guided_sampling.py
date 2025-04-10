@@ -23,10 +23,11 @@ class ResampleOptions(pcapi.options.base.Options):
     frequency_loss_weight: float = 0
     """Weight of the loss term that promotes power in high-frequency regime."""
     
-    optimize_against_latent: bool = False
-    """If True, inner optimization is done against the latent code $\hat{z}_0$, with gradient
-    backpropagating through the decoder. Otherwise, the latent is decoded, and the optimization
-    is done against the image which is then encoded back to the latent space.
+    optimization_space_dividing_point: float = 0.8
+    """The fraction of the total number of inference steps that divides the optimization space
+    in ReSample's physical guidance step. For example, if the total number of inference steps is 
+    500, and this value is 0.8, then physical guidance is done by optimizing the decoded pixel-space
+    image before the 400th step, and optimizing the latent after the 400th step.
     """
 
 
