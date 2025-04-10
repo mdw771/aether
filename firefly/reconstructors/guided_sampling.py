@@ -693,10 +693,24 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             *args, **kwargs
         )
         
+        self.z = None
+        self.p = None
+        self.v = None
+        
+    @property
+    def use_admm(self):
+        if self.options.physical_guidance_method == api.enums.PhysicalGuidanceMethods.SCORE:
+            return False
+        else:
+            return self.options.proximal_penalty > 0
+        
     def check_inputs(self):
         super().check_inputs()
         if self.parameter_group.object.optimizable:
             raise ValueError("The object must not be optimizable for physics-guided sampling.")
+        
+    def build(self):
+        super().build()
         
     def build_pipe(self):
         # Load pipe to CPU.
@@ -715,6 +729,10 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         
         # Move pipe to GPU.
         self.pipe = self.pipe.to("cuda")
+        
+    def create_admm_variables(self, z: torch.Tensor):
+        self.v = torch.zeros_like(z)
+        self.p = torch.zeros_like(z)
         
     def prepare_initial_latent(self) -> torch.Tensor:
         """Get the initial latent code. The size of the latent is determined
@@ -797,6 +815,11 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             The latent code at time step t.
         z_0_hat: torch.Tensor
             The estimated noise-free image at time step 0.
+            
+        Returns
+        -------
+        torch.Tensor
+            The updated latent code.
         """
         z_0_hat = z_0_hat.to(torch.float32)
         z_t = z_t.to(torch.float32)
@@ -957,6 +980,8 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         z_0_hat: torch.Tensor
             The estimated noise-free image at time step 0.
         """
+        if self.use_admm and step_index > 0:
+            z_t = self.p - self.v
         latent_model_input = torch.cat([z_t] * 2) if self.do_classifier_free_guidance else z_t
         latent_model_input = self.pipe.scheduler.scale_model_input(latent_model_input, t)
         
@@ -1053,7 +1078,11 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             score[:, c, ...] = score[:, c, ...] * (abs_score_channel < q)
         return score
     
-    def calculate_physical_guidance_optimization(self, z: torch.Tensor, optimize_against_latent: bool = False):
+    def calculate_physical_guidance_optimization(
+        self, 
+        z: torch.Tensor, 
+        optimize_against_latent: bool = False, 
+    ):
         """Optimize the image or latent to minimize the physics negative log-likelihood.
         
         Parameters
@@ -1076,6 +1105,12 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         
         if not optimize_against_latent:
             x = self.decode_latent(z)
+            
+        if self.use_admm:
+            if optimize_against_latent:
+                z0 = z.detach().clone()
+            else:
+                x0 = x.detach().clone()
         
         optimizer = pcmaps.get_optimizer_by_enum(
             self.options.resample_options.optimizer
@@ -1107,9 +1142,24 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
                     batch_loss = self.loss_function(
                         y_pred[:, self.dataset.valid_pixel_mask], y_true[:, self.dataset.valid_pixel_mask]
                     )
+                    
+                    # Add frequency loss term.
                     if self.options.resample_options.frequency_loss_weight > 0:
                         frequency_loss = self.frequency_loss(o_hat)
                         batch_loss = batch_loss + self.options.resample_options.frequency_loss_weight * frequency_loss
+                        
+                    # Add ADMM proximal penalty term.
+                    if self.use_admm:
+                        if optimize_against_latent:
+                            prox = self.options.proximal_penalty / 2 * (
+                                z - z0
+                            ).norm() ** 2
+                        else:
+                            prox = self.options.proximal_penalty / 2 * (
+                                x - x0
+                            ).norm() ** 2
+                        batch_loss = batch_loss + prox
+                        
                     batch_loss.backward(retain_graph=True)
                     optimizer.step()
                     self.step_all_optimizers()
@@ -1260,44 +1310,65 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         self.encode_prompt(self.options.prompt)
         
         # Get initial latent code.
-        z = self.prepare_initial_latent()
+        self.z = self.prepare_initial_latent()
+        self.create_admm_variables(self.z)
         
         self.prepare_added_time_ids_and_embeddings()
         
-        for self.current_denoise_step, t in enumerate(self.pipe.scheduler.timesteps):   
-            z, z_0_hat = self.denoise_step(z, t, step_index=self.current_denoise_step)
+        for self.current_denoise_step, t in enumerate(self.pipe.scheduler.timesteps):
+            # z-step
+            denoise_input = self.p - self.v if (self.use_admm and self.current_denoise_step > 0) else self.z
+            self.z, z_0_hat = self.denoise_step(denoise_input, t, step_index=self.current_denoise_step)
             
-            # Update the latent code with physical guidance.
+            # p-step: update the latent code with physical guidance.
             if self.do_physical_guidance(self.current_denoise_step):
-                z = self.physical_guidance_step(z, z_0_hat)
+                if self.use_admm:
+                    physical_guidance_input = self.z + self.v
+                    _, z_0_hat = self.denoise_step(physical_guidance_input, t, step_index=self.current_denoise_step)
+                else:
+                    physical_guidance_input = self.z
+                self.p = self.physical_guidance_step(physical_guidance_input, z_0_hat)
+                if not self.use_admm:
+                    self.z = self.p
+            elif self.use_admm:
+                self.p = self.z + self.v
             
             # Time-travel strategy
             if self.do_time_travel(self.current_denoise_step):
                 # Jump back in time. `self.pipe.scheduler.timesteps` is in reverse order,
                 # so we add 1 to the index to get the current timestep (it is already denoised,
                 # so it is at t - 1)
-                z = self.noise_step(
-                    z, 
+                self.z = self.noise_step(
+                    self.z, 
                     self.pipe.scheduler.timesteps[self.current_denoise_step + 1], 
                     by=self.options.time_travel_steps
                 )
                 
                 # Re-denoise with physics guidance
                 for j in range(self.options.time_travel_steps):
-                    z, z_0_hat_tt = self.denoise_step(
-                        z, 
+                    self.z, z_0_hat_tt = self.denoise_step(
+                        self.z, 
                         self.pipe.scheduler.timesteps[self.current_denoise_step + 1 - self.options.time_travel_steps + j],
                         step_index=self.current_denoise_step + 1 - self.options.time_travel_steps + j
                     )
                     if self.options.physical_guidance_scale > 0:
-                        z = self.physical_guidance_step(z, z_0_hat_tt)
+                        self.z = self.physical_guidance_step(self.z, z_0_hat_tt)
+            
+            self.update_dual()
             
             self.pbar.update(1)
         
         # Decode the final latents to image
-        self.sampled_image = self.decode_latent(z.to(self.pipe.vae.dtype))
+        self.sampled_image = self.decode_latent(self.z.to(self.pipe.vae.dtype))
         self.sampled_image_pil = self.pipe.image_processor.postprocess(self.sampled_image, output_type="pil")[0]
         self.parameter_group.object.set_data(fip.image_to_object(img_mag=1, img_phase=self.sampled_image))
+        
+    def update_dual(self):
+        if self.use_admm:
+            self.v = self.v + self.z - self.p
+            logging.info("Dual norm: {}".format(self.v.norm()))
+        else:
+            self.v = self.v * 0
 
 
 class GuidedLatentFlowMatchingReconstructor(GuidedLatentDiffusionReconstructor):

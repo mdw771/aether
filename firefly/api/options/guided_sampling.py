@@ -78,6 +78,9 @@ class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.Autodiff
     resample_options: ResampleOptions = field(default_factory=ResampleOptions)
     """Options for the ReSample method."""
     
+    proximal_penalty: float = 0
+    """The proximal penalty for ADMM. Set to 0 to disable ADMM."""
+    
     num_epochs: int = 1
     """The number of epochs. An epoch here refers to one generation pass, which
     may be multiple steps of the guided sampling. Usually 1 is enough, but it can
