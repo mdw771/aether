@@ -8,11 +8,13 @@ from ptychi.data_structures.object import PlanarObject
 from ptychi.utils import to_tensor
 
 import diffusers
+import firefly.api as api
 from firefly.reconstructors.guided_sampling import (
     GuidedLatentDiffusionReconstructor, 
     GuidedLatentFlowMatchingReconstructor, 
     GuidedDeepFloydIFReconstructor,
 )
+from firefly.reconstructors.admmdiff import ADMMDiffReconstructor
 from firefly.reconstructors.alt_proj import (
     AlternatingProjectionReconstructor
 )
@@ -92,6 +94,8 @@ class BaseDiffusionPtychographyTask(PtychographyTask):
 class GuidedDiffusionPtychographyTask(BaseDiffusionPtychographyTask):
         
     def get_reconstructor_class(self):
+        if isinstance(self.options.reconstructor_options, api.ADMMDiffReconstructorOptions):
+            return ADMMDiffReconstructor
         if "stable-diffusion-3" in self.reconstructor_options.model_path.lower():
             return GuidedLatentFlowMatchingReconstructor
         elif "deepfloyd" in self.reconstructor_options.model_path.lower():

@@ -965,7 +965,7 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         self.text_embeddings.negative_add_time_ids = negative_add_time_ids
         self.text_embeddings.add_text_embeds = add_text_embeds
     
-    def denoise_step(self, z_t: torch.Tensor, t: int, step_index: Optional[int] = None):
+    def denoise_step(self, z_t: torch.Tensor, t: int, step_index: Optional[int] = None, return_noise_pred: bool = False):
         """Denoise the latent code by one step. Text conditioning is added
         to the noise through classifier-free guidance.
         The input is detached, so this function is not differentiable.
@@ -979,6 +979,8 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         step_index: int
             The index of the current denoising step. It will be used to override
             the `step_index` attribute of the scheduler.
+        return_noise_pred: bool
+            If True, the predicted noise at time step t will be returned.
             
         Returns
         -------
@@ -986,14 +988,17 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             The denoised latent code (x_{t-1}).
         z_0_hat: torch.Tensor
             The estimated noise-free image at time step 0.
+        noise_pred: torch.Tensor
+            The predicted noise at time step t. Only returned if
+            `return_noise_pred` is True.
         """
         if self.use_admm and step_index > 0:
             z_t = self.p - self.v
         latent_model_input = torch.cat([z_t] * 2) if self.do_classifier_free_guidance else z_t
         latent_model_input = self.pipe.scheduler.scale_model_input(latent_model_input, t)
-        
+
         added_cond_kwargs = {"text_embeds": self.text_embeddings.add_text_embeds, "time_ids": self.text_embeddings.add_time_ids}
-                    
+
         # Standard denoising step.
         noise_pred = self.pipe.unet(
             latent_model_input,
@@ -1002,24 +1007,27 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             added_cond_kwargs=added_cond_kwargs,
             return_dict=False
         )[0]
-        
+
         # Classifier-free (text) guidance step.
         if self.do_classifier_free_guidance:
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + self.options.text_guidance_scale * (noise_pred_text - noise_pred_uncond)
-        
+
         if step_index is not None:
             self.pipe.scheduler._step_index = step_index
-        
+
         step_output = self.pipe.scheduler.step(noise_pred, t, z_t, return_dict=True)
         z_tm1 = step_output.prev_sample
         z_0_hat = step_output.pred_original_sample
-        
+
         if z_tm1.dtype != z_t.dtype:
             z_tm1 = z_tm1.to(z_t.dtype)
         if z_0_hat.dtype != z_t.dtype:
             z_0_hat = z_0_hat.to(z_t.dtype)
-        return z_tm1, z_0_hat
+        if return_noise_pred:
+            return z_tm1, z_0_hat, noise_pred
+        else:
+            return z_tm1, z_0_hat
         
     def initialize_gradients(self, z: torch.Tensor):
         z.grad = None
