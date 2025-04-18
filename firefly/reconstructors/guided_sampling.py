@@ -1345,10 +1345,12 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             if self.do_physical_guidance(self.current_denoise_step):
                 if self.use_admm:
                     physical_guidance_input = self.z + self.v
-                    _, z_0_hat = self.denoise_step(physical_guidance_input, t, step_index=self.current_denoise_step)
+                    _, p_0_hat = self.denoise_step(physical_guidance_input, t, step_index=self.current_denoise_step)
+                    latent_0 = p_0_hat
                 else:
                     physical_guidance_input = self.z
-                self.p = self.physical_guidance_step(physical_guidance_input, z_0_hat)
+                    latent_0 = z_0_hat
+                self.p = self.physical_guidance_step(physical_guidance_input, latent_0)
                 if not self.use_admm:
                     self.z = self.p
             elif self.use_admm:
