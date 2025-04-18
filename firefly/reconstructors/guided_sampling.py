@@ -1157,27 +1157,33 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
                     batch_loss = self.loss_function(
                         y_pred[:, self.dataset.valid_pixel_mask], y_true[:, self.dataset.valid_pixel_mask]
                     )
+                    batch_loss.backward(retain_graph=True)
+                    # Update other forward model parameters right here before adding the gradients of the
+                    # proximal term.
+                    self.step_all_optimizers()
                     
                     # Add frequency loss term.
                     if self.options.resample_options.frequency_loss_weight > 0:
                         frequency_loss = self.frequency_loss(o_hat)
-                        batch_loss = batch_loss + self.options.resample_options.frequency_loss_weight * frequency_loss
+                        frequency_loss.backward(retain_graph=True)
                         
                     # Add ADMM proximal penalty term.
                     if self.use_admm:
                         if optimize_against_latent:
-                            prox = self.options.proximal_penalty / 2 * (
+                            prox_loss = self.options.proximal_penalty / 2 * (
                                 z - z0
                             ).norm() ** 2
                         else:
-                            prox = self.options.proximal_penalty / 2 * (
+                            prox_loss = self.options.proximal_penalty / 2 * (
                                 x - x0
                             ).norm() ** 2
-                        batch_loss = batch_loss + prox
+                        # Proxinal term's gradient is added onto the data term's gradient.
+                        prox_loss.backward(retain_graph=True)
                         
-                    batch_loss.backward(retain_graph=True)
+                    # Just update x/z here - other forward model parameters have been updated
+                    # before the proximal term's gradient was added.
                     optimizer.step()
-                    self.step_all_optimizers()
+                    
                     self.forward_model.zero_grad()
                     self.loss_tracker.update_batch_loss_with_value(batch_loss.item())
                 self.loss_tracker.conclude_epoch()
