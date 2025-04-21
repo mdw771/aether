@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Optional
 
 import ptychi.api as pcapi
 import firefly.api.enums as enums
@@ -90,6 +91,11 @@ class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.Autodiff
     
     forward_model_class: pcapi.enums.ForwardModels = pcapi.enums.ForwardModels.PLANAR_PTYCHOGRAPHY
     """The forward model to use for physical guidance"""
+    
+    generator_seed: Optional[int] = None
+    """The seed for the generator used by the diffusion model. This is needed to guarantee
+    deterministic generation even if random seeds are used elsewhere.
+    """
     
     def get_reconstructor_type(self):
         return "guided_diffusion"

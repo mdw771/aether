@@ -1,6 +1,7 @@
 from typing import Literal, Optional
 import logging
 import copy
+import inspect
 
 import numpy as np
 import diffusers
@@ -58,6 +59,8 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         self.sampled_image: torch.Tensor = None
         self.sampled_image_pil: Image.Image = None
         
+        self.generator = None
+        
     def build(self):
         self.build_pipe()
         super().build()
@@ -65,6 +68,11 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
     def build_pipe(self):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
+        
+    def build_generator(self):
+        self.generator = torch.Generator(device=torch.self.pipe.device)
+        if self.options.generator_seed is not None:
+            self.generator.manual_seed(self.options.generator_seed)
         
     def set_noise_scheduler_in_pipe(self, pipe):
         # Change scheduler.
@@ -620,7 +628,7 @@ class GuidedDeepFloydIFReconstructor(GuidedPixelSpaceDiffusionReconstructor):
             width,
             prompt_embeds.dtype,
             image.device,
-            None
+            self.generator
         )
         
         num_channels_image = image.shape[1]
@@ -764,7 +772,7 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
             width=self.parameter_group.object.lateral_shape[1],
             dtype=self.text_embeddings.prompt_embeds.dtype,
             device=self.text_embeddings.prompt_embeds.device,
-            generator=None,
+            generator=self.generator,
             latents=None
         )
         return z
@@ -998,6 +1006,9 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         latent_model_input = self.pipe.scheduler.scale_model_input(latent_model_input, t)
 
         added_cond_kwargs = {"text_embeds": self.text_embeddings.add_text_embeds, "time_ids": self.text_embeddings.add_time_ids}
+        scheduler_step_extra_kwargs = {}
+        if "generator" in set(inspect.signature(self.pipe.scheduler.step).parameters.keys()):
+            scheduler_step_extra_kwargs["generator"] = self.generator
 
         # Standard denoising step.
         noise_pred = self.pipe.unet(
@@ -1016,7 +1027,7 @@ class GuidedLatentDiffusionReconstructor(GuidedDiffusionReconstructor):
         if step_index is not None:
             self.pipe.scheduler._step_index = step_index
 
-        step_output = self.pipe.scheduler.step(noise_pred, t, z_t, return_dict=True)
+        step_output = self.pipe.scheduler.step(noise_pred, t, z_t, **scheduler_step_extra_kwargs, return_dict=True)
         z_tm1 = step_output.prev_sample
         z_0_hat = step_output.pred_original_sample
 
@@ -1425,7 +1436,7 @@ class GuidedLatentFlowMatchingReconstructor(GuidedLatentDiffusionReconstructor):
             width=self.parameter_group.object.lateral_shape[1],
             dtype=self.text_embeddings.prompt_embeds.dtype,
             device=torch.get_default_device(),
-            generator=None,
+            generator=self.generator,
             latents=None
         )
         return z
@@ -1537,6 +1548,10 @@ class GuidedLatentFlowMatchingReconstructor(GuidedLatentDiffusionReconstructor):
             latent_model_input = torch.cat([z_t] * 2) if self.do_classifier_free_guidance else z_t
             timestep = t.expand(latent_model_input.shape[0])
             
+            scheduler_step_extra_kwargs = {}
+            if "generator" in set(inspect.signature(self.pipe.scheduler.step).parameters.keys()):
+                scheduler_step_extra_kwargs["generator"] = self.generator
+            
             # Standard denoising step.
             noise_pred = self.pipe.transformer(
                 hidden_states=latent_model_input,
@@ -1551,7 +1566,7 @@ class GuidedLatentFlowMatchingReconstructor(GuidedLatentDiffusionReconstructor):
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + self.options.text_guidance_scale * (noise_pred_text - noise_pred_uncond)
             
-            step_output = self.pipe.scheduler.step(noise_pred, t, z_t, return_dict=True)
+            step_output = self.pipe.scheduler.step(noise_pred, t, z_t, **scheduler_step_extra_kwargs, return_dict=True)
             z_tm1 = step_output.prev_sample
             if hasattr(step_output, "pred_original_sample"):
                 z_0_hat = step_output.pred_original_sample
