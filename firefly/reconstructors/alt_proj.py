@@ -101,15 +101,17 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             x = self.x
         else:
             x = self.v - self.u
-        x = x.requires_grad_(True)
+        x = x.detach().requires_grad_(True)
         optimizer = torch.optim.Adam([x], lr=1e-3)
         
         with torch.enable_grad():            
             for i_data_proj_epoch in range(self.options.num_data_projection_epochs):
                 for batch_data in self.dataloader:
                     x.grad = None
-                    self.set_object_data_to_forward_model(x)
+                    optimizer.zero_grad()
+                    self.forward_model.zero_grad()
                     
+                    self.set_object_data_to_forward_model(x)
                     input_data, y_true = self.prepare_batch_data(batch_data)
                     y_pred = self.forward_model(*input_data)
                     
@@ -123,12 +125,13 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                         reg_prox = self.options.proximal_penalty / 2 * (
                             x - self.v + self.u
                         ).norm() ** 2
-                        batch_loss += reg_prox
+                        batch_loss = batch_loss + reg_prox
 
-                    batch_loss.backward(retain_graph=True)
+                    batch_loss.backward()
                     self.run_post_differentiation_hooks(input_data, y_true)
                     optimizer.step()
                     self.step_all_optimizers()
+                    optimizer.zero_grad()
                     self.forward_model.zero_grad()
                     
                     self.loss_tracker.update_batch_loss_with_value(batch_loss.item())
@@ -181,6 +184,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         n_epochs = self.options.num_epochs if n_epochs is None else n_epochs
         with torch.no_grad():
             for _ in range(n_epochs):
+                self.run_pre_epoch_hooks()
                 self.run_admm_epoch()
                 self.sync_data_to_object()
                 
