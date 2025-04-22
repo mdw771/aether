@@ -68,16 +68,16 @@ def image_to_object(
     Parameters
     ----------
     img_mag: torch.Tensor
-        A (1, h, w) tensor giving the magnitude of the image. The image is expected
+        A (n_slices, 3, h, w) tensor giving the magnitude of the image. The image is expected
         to be scaled to the usual range of object magnitudes, e.g., around 1.
     img_phase: torch.Tensor
-        A (1, h, w) tensor giving the phase of the image. The image is expected
+        A (n_slices, 3, h, w) tensor giving the phase of the image. The image is expected
         to be scaled to the usual range of object phases, e.g., centered around 0.
         
     Returns
     -------
     torch.Tensor
-        A (1, h, w) tensor giving the complex object.
+        A (n_slices, h, w) tensor giving the complex object.
     """
     if img_mag is None and img_phase is None:
         raise ValueError("Either img_mag or img_phase must be provided.")
@@ -110,12 +110,12 @@ def object_to_image(
     Parameters
     ----------
     obj: torch.Tensor
-        A (1, h, w) tensor giving the complex object.
+        A (n_slices, h, w) tensor giving the complex object.
         
     Returns
     -------
     torch.Tensor
-        A (1, 3, h, w) tensor giving the image.
+        A (n_slices, 3, h, w) tensor giving the image.
     """
     if dtype is None:
         dtype = torch.get_default_dtype()

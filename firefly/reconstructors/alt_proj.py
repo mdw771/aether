@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Union, Any
 import logging
 
 import numpy as np
@@ -57,6 +57,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.build_pipe()
         super().build()
         self.build_variables()
+
     def build_pipe(self):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
@@ -95,6 +96,51 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             self.parameter_group.object.set_data(self.v)
         else:
             self.parameter_group.object.set_data(self.x)
+            
+    def get_slice_specific_option_value(
+        self, 
+        val: Union[Any, list[Any], list[list[Any]]],
+        slice_idx: int,
+        slice_value_is_list: bool = False
+    ) -> Union[Any, list[Any]]:
+        """Get the slice-specific value from a list of values from fields in
+        the options object. If the input is a scalar, it is returned as is. 
+        If it is a list, the element corresponding to `slice_idx` is returned.
+        
+        If `slice_value_is_list` is True, it is assumed that the value for each
+        slice is a list. In that case, the input can be a list of lists.
+        
+        Parameters
+        ----------
+        val: Union[Any, list[Any], list[list[Any]]]
+            The value to get the slice-specific value from.
+        slice_idx: int
+            The index of the slice to get the value from.
+        slice_value_is_list: bool
+            Whether the value for each slice is supposed to be a list.
+            
+        Returns
+        -------
+        Union[Any, list[Any]]
+            The slice-specific value.
+        """
+        if not isinstance(val, (list, tuple)):
+            if slice_value_is_list:
+                return [val]
+            else:
+                return val
+        elif isinstance(val[0], (list, tuple)):
+            if slice_value_is_list:
+                return val[slice_idx]
+            else:
+                raise ValueError(
+                    "slice_value_is_list is False, but the input is a list of lists."
+                )
+        else:
+            if slice_value_is_list:
+                return val
+            else:
+                return val[slice_idx]
         
     def project_to_data(self):
         if self.current_epoch == 0:
@@ -142,34 +188,44 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
     def project_to_prior(self):
         input = self.x + self.u
         _, orig_img = ip.object_to_image(input, dtype=self.pipe.unet.dtype)
-        orig_img = self.image_normalizer.normalize(orig_img.float()).to(self.pipe.unet.dtype)
         
-        _ = self.pipe.invert(
-            image=orig_img,
-            num_inversion_steps=50,
-            skip=0.1
+        edited_imgs = []
+        for i_slice, orig_img_slice in enumerate(orig_img):
+            orig_img_slice = self.image_normalizer.normalize(orig_img_slice.float()).to(self.pipe.unet.dtype)
+            
+            _ = self.pipe.invert(
+                image=orig_img_slice,
+                num_inversion_steps=50,
+                skip=0.1
+            )
+
+            img_slice = self.pipe(
+                editing_prompt=self.get_slice_specific_option_value(
+                    self.options.editing_prompt, i_slice, slice_value_is_list=True
+                ),
+                reverse_editing_direction=self.options.remove_concept,
+                edit_guidance_scale=self.get_slice_specific_option_value(
+                    self.options.text_guidance_scale, i_slice
+                ),
+                edit_threshold=self.get_slice_specific_option_value(
+                    self.options.editing_threshold, i_slice
+                ),
+            )
+            
+            img_slice = ip.pil_image_to_tensor(img_slice.images[0], dtype=self.x.real.dtype, device=self.x.device)
+            img_slice = self.image_normalizer.unnormalize(img_slice)
+            
+            # Match mean and std within ROI.
+            if self.options.matched_stats_of_prior_projected_image:
+                bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
+                img_slice = ip.match_mean_std(img_slice, orig_img_slice, (0, 0, *bbox))
+
+            edited_imgs.append(img_slice)
+        edited_imgs = torch.cat(edited_imgs, dim=0)
+        v = ip.image_to_object(
+            img_mag=self.x.abs().unsqueeze(1).repeat(1, 3, 1, 1), 
+            img_phase=edited_imgs
         )
-        
-        if isinstance(self.options.editing_prompt, str):
-            editing_prompt = [self.options.editing_prompt]
-        else:
-            editing_prompt = self.options.editing_prompt
-        img = self.pipe(
-            editing_prompt=editing_prompt,
-            reverse_editing_direction=self.options.remove_concept,
-            edit_guidance_scale=self.options.text_guidance_scale,
-            edit_threshold=0.75,
-        )
-        
-        img = ip.pil_image_to_tensor(img.images[0], dtype=self.x.real.dtype, device=self.x.device)
-        img = self.image_normalizer.unnormalize(img)
-        
-        # Match mean and std within ROI.
-        if self.options.matched_stats_of_prior_projected_image:
-            bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
-            img = ip.match_mean_std(img, orig_img, (0, 0, *bbox))
-        
-        v = ip.image_to_object(img_mag=self.x.abs().unsqueeze(1).repeat(1, 3, 1, 1), img_phase=img)
         self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
     
     def update_dual(self):

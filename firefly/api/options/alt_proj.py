@@ -7,16 +7,29 @@ import firefly.api.enums as enums
 
 @dataclass
 class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.AutodiffPtychographyReconstructorOptions):
-    editing_prompt: Union[str, list[str]] = ""
-    """The prompts of the concepts for the image editing model to add or remove."""
+    editing_prompt: Union[str, list[str], list[list[str]]] = ""
+    """The prompts of the concepts for the image editing model to add or remove. If
+    given as a single string or a list of strings, the same prompt will be used for
+    all slices. Multiple concepts can be given by providing a list of strings. To
+    specify different prompts for different slices, provide a list of lists of strings 
+    (i.e., a 2D list of strings).
+    """
+    
+    text_guidance_scale: Union[float, list[float]] = 7
+    """The guidance scale to use for the guided sampling. If a list of floats is provided,
+    it will be assumed that each element specifies the value for a certain slice.
+    """
+    
+    editing_threshold: Union[float, list[float]] = 0.75
+    """The editing threshold. A smaller value increases the area of effect. 
+    If a list of floats is provided, it will be assumed that each element specifies 
+    the value for a certain slice.
+    """
     
     remove_concept: bool = True
     """If True, the concept in the prompt will be removed from the image. Otherwise, 
     it will be added.
     """
-    
-    text_guidance_scale: float = 7
-    """The guidance scale to use for the guided sampling."""
     
     loss_function: pcapi.enums.LossFunctions = pcapi.enums.LossFunctions.MSE_SQRT
     """The loss function to calculate physical guidance."""
