@@ -63,6 +63,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         
     def build(self):
         self.build_pipe()
+        self.build_generator()
         super().build()
         
     def build_pipe(self):
@@ -70,7 +71,7 @@ class GuidedDiffusionReconstructor(AutodiffPtychographyReconstructor):
         self.pipe = self.model_loader.pipe
         
     def build_generator(self):
-        self.generator = torch.Generator(device=torch.self.pipe.device)
+        self.generator = torch.Generator(device=self.pipe.device)
         if self.options.generator_seed is not None:
             self.generator.manual_seed(self.options.generator_seed)
         

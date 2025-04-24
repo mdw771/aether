@@ -53,8 +53,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         
         self.image_normalizer = ip.ImageNormalizer()
         
+        self.generator = None
+        
     def build(self):
         self.build_pipe()
+        self.build_generator()
         super().build()
         self.build_variables()
 
@@ -62,6 +65,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
         self.pipe.to("cuda")
+        
+    def build_generator(self):
+        self.generator = torch.Generator(device=self.pipe.device)
+        if self.options.generator_seed is not None:
+            self.generator.manual_seed(self.options.generator_seed)
         
     def build_forward_model(self):
         self.forward_model_params["wavelength_m"] = self.dataset.wavelength_m
@@ -196,7 +204,8 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             _ = self.pipe.invert(
                 image=orig_img_slice,
                 num_inversion_steps=50,
-                skip=0.1
+                skip=0.1,
+                generator=self.generator
             )
 
             img_slice = self.pipe(
@@ -210,6 +219,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                 edit_threshold=self.get_slice_specific_option_value(
                     self.options.editing_threshold, i_slice
                 ),
+                generator=self.generator
             )
             
             img_slice = ip.pil_image_to_tensor(img_slice.images[0], dtype=self.x.real.dtype, device=self.x.device)
