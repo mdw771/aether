@@ -14,12 +14,19 @@ from .options.alt_proj import (
     AlternatingProjectionProbePositionOptions,
     AlternatingProjectionOPRModeWeightsOptions,
 )
-from .options.admmdiff import (
+from .options.latent_admmdiff import (
     ADMMDiffOptions,
     ADMMDiffReconstructorOptions,
     ADMMDiffObjectOptions,
     ADMMDiffProbeOptions,
     ADMMDiffProbePositionOptions,
+)
+from .options.latent_dps import (
+    LatentDPSOptions,
+    LatentDPSReconstructorOptions,
+    LatentDPSObjectOptions,
+    LatentDPSProbeOptions,
+    LatentDPSProbePositionOptions,
 )
 from .task import (
     GuidedDiffusionPtychographyTask, 

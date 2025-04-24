@@ -14,7 +14,8 @@ from firefly.reconstructors.guided_sampling import (
     GuidedLatentFlowMatchingReconstructor, 
     GuidedDeepFloydIFReconstructor,
 )
-from firefly.reconstructors.admmdiff import ADMMDiffReconstructor
+from firefly.reconstructors.latent_admmdiff import ADMMDiffReconstructor
+from firefly.reconstructors.latent_dps import LatentDPSReconstructor
 from firefly.reconstructors.alt_proj import (
     AlternatingProjectionReconstructor
 )
@@ -96,6 +97,8 @@ class GuidedDiffusionPtychographyTask(BaseDiffusionPtychographyTask):
     def get_reconstructor_class(self):
         if isinstance(self.options.reconstructor_options, api.ADMMDiffReconstructorOptions):
             return ADMMDiffReconstructor
+        if isinstance(self.options.reconstructor_options, api.LatentDPSReconstructorOptions):
+            return LatentDPSReconstructor
         if "stable-diffusion-3" in self.reconstructor_options.model_path.lower():
             return GuidedLatentFlowMatchingReconstructor
         elif "deepfloyd" in self.reconstructor_options.model_path.lower():
