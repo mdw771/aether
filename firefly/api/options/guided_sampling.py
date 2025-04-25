@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
 import ptychi.api as pcapi
+
 import firefly.api.enums as enums
 
 
@@ -52,7 +54,7 @@ class GuidedDiffusionReconstructorOptions(pcapi.options.ad_ptychography.Autodiff
     time_travel_steps: int = 10
     """The number of steps to travel back in time."""
     
-    time_travel_plan: pcapi.OptimizationPlan = field(default_factory=pcapi.OptimizationPlan)
+    time_travel_plan: pcapi.OptimizationPlan = field(default_factory=lambda: pcapi.OptimizationPlan(start=np.inf, stride=np.inf))
     """The scheduling plan for time travel where one can set the start, stop and interval
     in terms of the denoising step."""
     
