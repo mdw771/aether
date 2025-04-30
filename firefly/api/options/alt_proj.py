@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
+import numpy as np
 import ptychi.api as pcapi
+
 import firefly.api.enums as enums
 
 
@@ -46,6 +48,11 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     num_data_projection_epochs: int = 20
     """The number of epochs for data projection."""
     
+    max_num_prior_projections: int = np.inf
+    """The maximum allowable number of prior projections. Prior projection no longer runs
+    after exceeding this value and the reconstruction becomes purely data-driven.
+    """
+    
     proximal_penalty: float = 1.0
     """The penalty for the proximal term in calculating the projections. This is the
     `tau` in https://arxiv.org/abs/1704.02712. ADMM reduces to alternating projection 
@@ -64,7 +71,7 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     i.e., the step before prior projection.
     """
     
-    matched_stats_of_prior_projected_image: bool = False
+    match_stats_of_prior_projected_image: bool = False
     """If True, after each prior projection, the mean and standard deviation of the 
     prior-projected image will be matched to those of the data-projected image.
     """

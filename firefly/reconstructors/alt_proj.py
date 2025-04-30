@@ -51,6 +51,9 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.v = None
         self.u = None
         
+        self.num_prior_projections = 0
+        self.num_data_projections = 0
+        
         self.image_normalizer = ip.ImageNormalizer()
         
         self.generator = None
@@ -85,6 +88,14 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.x = self.parameter_group.object.data.detach()
         self.v = torch.zeros_like(self.x)
         self.u = torch.zeros_like(self.x)
+        
+    def build_counter(self):
+        super().build_counter()
+        self.num_prior_projections = 0
+        self.num_data_projections = 0
+        
+    def use_admm(self) -> bool:
+        return self.num_prior_projections < self.options.max_num_prior_projections
         
     def set_object_data_to_forward_model(self, o_hat: torch.Tensor):
         """Set object data to the object function object in the forward model. 
@@ -151,7 +162,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                 return val[slice_idx]
         
     def project_to_data(self):
-        if self.current_epoch == 0:
+        if self.current_epoch == 0 or not self.use_admm():
             x = self.x
         else:
             x = self.v - self.u
@@ -192,6 +203,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                 self.loss_tracker.conclude_epoch()
                 self.loss_tracker.print_latest()
         self.x = x.detach()
+        self.num_data_projections += 1
     
     def project_to_prior(self):
         input = self.x + self.u
@@ -226,7 +238,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             img_slice = self.image_normalizer.unnormalize(img_slice)
             
             # Match mean and std within ROI.
-            if self.options.matched_stats_of_prior_projected_image:
+            if self.options.match_stats_of_prior_projected_image:
                 bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
                 img_slice = ip.match_mean_std(img_slice, orig_img_slice, (0, 0, *bbox))
 
@@ -237,14 +249,16 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             img_phase=edited_imgs
         )
         self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
-    
+        self.num_prior_projections += 1
+
     def update_dual(self):
         self.u = self.u + self.x - self.v
         
     def run_admm_epoch(self):
         self.project_to_data()
-        self.project_to_prior()
-        self.update_dual()
+        if self.use_admm():
+            self.project_to_prior()
+            self.update_dual()
     
     def run(self, n_epochs: int = None):
         n_epochs = self.options.num_epochs if n_epochs is None else n_epochs
