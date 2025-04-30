@@ -167,7 +167,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         else:
             x = self.v - self.u
         x = x.detach().requires_grad_(True)
-        optimizer = torch.optim.Adam([x], lr=self.parameter_group.object.options.step_size)
+        optimizer = pcmaps.get_optimizer_by_enum(
+            self.parameter_group.object.options.optimizer
+        )(
+            [x], lr=self.parameter_group.object.options.step_size
+        )
         
         with torch.enable_grad():            
             for i_data_proj_epoch in range(self.options.num_data_projection_epochs):
