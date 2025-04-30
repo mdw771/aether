@@ -219,7 +219,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             
             _ = self.pipe.invert(
                 image=orig_img_slice,
-                num_inversion_steps=50,
+                num_inversion_steps=self.options.num_inference_steps,
                 skip=0.1,
                 generator=self.generator
             )
