@@ -57,6 +57,7 @@ class HuggingFaceModelLoader(ModelLoader):
             self.download_model()
             self.save_model()
         self.pipe = self.pipe.to(self.device)
+        self.pipe.safety_checker = None
                 
     def load_local_model(self):
         with util.ignore_default_device():

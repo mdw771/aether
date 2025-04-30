@@ -240,7 +240,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             # Match mean and std within ROI.
             if self.options.match_stats_of_prior_projected_image:
                 bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
-                img_slice = ip.match_mean_std(img_slice, orig_img_slice, (0, 0, *bbox))
+                img_slice = ip.match_mean_std(img_slice, orig_img_slice[None, ...], (0, 0, *bbox))
 
             edited_imgs.append(img_slice)
         edited_imgs = torch.cat(edited_imgs, dim=0)
