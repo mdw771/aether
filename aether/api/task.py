@@ -8,18 +8,18 @@ from ptychi.data_structures.object import PlanarObject
 from ptychi.utils import to_tensor
 
 import diffusers
-import firefly.api as api
-from firefly.reconstructors.guided_sampling import (
+import aether.api as api
+from aether.reconstructors.guided_sampling import (
     GuidedLatentDiffusionReconstructor, 
     GuidedLatentFlowMatchingReconstructor, 
     GuidedDeepFloydIFReconstructor,
 )
-from firefly.reconstructors.latent_admmdiff import ADMMDiffReconstructor
-from firefly.reconstructors.latent_dps import LatentDPSReconstructor
-from firefly.reconstructors.alt_proj import (
+from aether.reconstructors.latent_admmdiff import ADMMDiffReconstructor
+from aether.reconstructors.latent_dps import LatentDPSReconstructor
+from aether.reconstructors.alt_proj import (
     AlternatingProjectionReconstructor
 )
-import firefly.io as fio
+import aether.io as fio
 
 
 logger = logging.getLogger(__name__)

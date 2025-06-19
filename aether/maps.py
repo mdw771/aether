@@ -1,4 +1,4 @@
-import firefly.api.enums as enums
+import aether.api.enums as enums
 import diffusers.schedulers as schedulers
 
 

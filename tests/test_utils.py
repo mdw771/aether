@@ -2,15 +2,11 @@ import random
 import os
 import datetime
 import logging
-import configparser
-from typing import Union
 
 import torch
 import h5py
 import numpy as np
 import pytest
-import subprocess
-import socket
 
 from ptychi.utils import rescale_probe, add_additional_opr_probe_modes_to_probe, set_default_complex_dtype, to_tensor
 import ptychi.timing.timer_utils as timer_utils
@@ -84,9 +80,9 @@ class BaseTester:
     @staticmethod
     def get_ci_data_dir():
         try:
-            dir = os.environ['FIREFLY_CI_DATA_DIR']
+            dir = os.environ['AETHER_CI_DATA_DIR']
         except KeyError:
-            raise KeyError('FIREFLY_CI_DATA_DIR not set. Please set it to the path to the data folder.')
+            raise KeyError('AETHER_CI_DATA_DIR not set. Please set it to the path to the data folder.')
         return dir
 
     def get_ci_input_data_dir(self):

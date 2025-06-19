@@ -1,1 +1,1 @@
-Welcome to the repository for Foundational Image Reconstruction Engine Following Light phYsics (FIREFLY).
+Welcome to the repository of AI-Enhanced Technique for High-quality Reconstruction (AETHER)!

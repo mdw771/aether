@@ -5,8 +5,8 @@ from typing import Optional
 import torch
 import diffusers
 
-import firefly
-import firefly.util as util
+import aether
+import aether.util as util
 
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class ModelLoader:
         
     @staticmethod
     def get_local_model_repository_path():
-        return os.path.join(firefly.__path__[0], os.pardir, "models")
+        return os.path.join(aether.__path__[0], os.pardir, "models")
     
 
 class HuggingFaceModelLoader(ModelLoader):
@@ -38,7 +38,7 @@ class HuggingFaceModelLoader(ModelLoader):
             The path to model. The path should be given as a Hugging Face model 
             name or path so that it can be fetched from Hugging Face --
             for example, "stabilityai/stable-diffusion-3.5-medium". If the model
-            exists in `<firefly_root>/models/`, it will be loaded from there.
+            exists in `<aether_root>/models/`, it will be loaded from there.
             Otherwise, it will be downloaded from Hugging Face and saved to that
             location.
         """

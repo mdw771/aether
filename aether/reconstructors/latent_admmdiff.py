@@ -4,8 +4,8 @@ import logging
 import torch
 import ptychi.maps as pcmaps
 
-import firefly.image_proc as fip
-from firefly.reconstructors.guided_sampling import GuidedLatentDiffusionReconstructor
+import aether.image_proc as fip
+from aether.reconstructors.guided_sampling import GuidedLatentDiffusionReconstructor
 
 
 logger = logging.getLogger(__name__)

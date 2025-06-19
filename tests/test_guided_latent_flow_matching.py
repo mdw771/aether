@@ -3,7 +3,7 @@ import pytest
 
 import torch
 import matplotlib.pyplot as plt
-import firefly.api as api
+import aether.api as api
 
 import test_utils as tutils
 

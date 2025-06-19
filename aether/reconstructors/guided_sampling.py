@@ -16,12 +16,12 @@ import ptychi.maps as pcmaps
 from ptychi.io_handles import PtychographyDataset
 import ptychi.image_proc as ip
 
-import firefly.maths as maths
-import firefly.api as api
-from firefly.io import HuggingFaceModelLoader
-import firefly.maps as maps
-import firefly.util as util
-import firefly.image_proc as fip
+import aether.maths as maths
+import aether.api as api
+from aether.io import HuggingFaceModelLoader
+import aether.maps as maps
+import aether.util as util
+import aether.image_proc as fip
 
 
 logger = logging.getLogger(__name__)

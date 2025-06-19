@@ -9,10 +9,10 @@ from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 import ptychi.maps as pcmaps
 from ptychi.io_handles import PtychographyDataset
 
-import firefly.maths as maths
-import firefly.api as api
-from firefly.io import HuggingFaceModelLoader
-import firefly.image_proc as ip
+import aether.maths as maths
+import aether.api as api
+from aether.io import HuggingFaceModelLoader
+import aether.image_proc as ip
 
 
 logger = logging.getLogger(__name__)

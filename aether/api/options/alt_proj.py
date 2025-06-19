@@ -4,7 +4,7 @@ from typing import Optional, Union
 import numpy as np
 import ptychi.api as pcapi
 
-import firefly.api.enums as enums
+import aether.api.enums as enums
 
 
 @dataclass

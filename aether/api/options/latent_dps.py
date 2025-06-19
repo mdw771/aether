@@ -2,8 +2,8 @@ from dataclasses import dataclass, field
 
 import ptychi.api as pcapi
 
-import firefly.api.enums as enums
-from firefly.api.options.guided_sampling import (
+import aether.api.enums as enums
+from aether.api.options.guided_sampling import (
     GuidedDiffusionOptions, 
     GuidedDiffusionObjectOptions, 
     GuidedDiffusionProbeOptions, 

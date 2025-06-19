@@ -3,7 +3,7 @@ from typing import Union
 import torch
 import numpy as np
 from PIL import Image
-import firefly.maths as maths
+import aether.maths as maths
 
 class ImageNormalizer:
     """Normalize or unnormalize an image.

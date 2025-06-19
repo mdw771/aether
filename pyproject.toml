@@ -3,8 +3,8 @@ requires = ["setuptools>=64", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "firefly"
-description = "Foundational image reconstruction engine following light physics"
+name = "aether"
+description = "AI-enhanced technique for high-quality reconstruction"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "LICENSE.txt"}
@@ -23,12 +23,12 @@ dependencies = [
     "accelerate==1.4.0",
     "transformers==4.49.0",
     "sentencepiece==0.2.0",
-    "pty-chi@git+https://github.com/AdvancedPhotonSource/pty-chi.git",
+    "ptychi@git+https://github.com/AdvancedPhotonSource/pty-chi.git",
 ]
 dynamic = ["version"]
 
 [tool.setuptools]
-packages = ["firefly"]
+packages = ["aether"]
 
 [docs]
 dependencies = [
