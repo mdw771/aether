@@ -8,6 +8,7 @@ from ptychi.reconstructors.ad_ptychography import AutodiffPtychographyReconstruc
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
 import ptychi.maps as pcmaps
 from ptychi.io_handles import PtychographyDataset
+from ptychi.api.task import PtychographyTask
 
 import aether.maths as maths
 import aether.api as api
@@ -63,11 +64,15 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.build_generator()
         super().build()
         self.build_variables()
+        self.build_ptychi_task()
 
     def build_pipe(self):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
         self.pipe.to("cuda")
+        
+    def build_ptychi_task(self):
+        self.ptychi_task = PtychographyTask(self.options.data_projection_options)
         
     def build_generator(self):
         self.generator = torch.Generator(device=self.pipe.device)
@@ -166,49 +171,22 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             x = self.x
         else:
             x = self.v - self.u
-        x = x.detach().requires_grad_(True)
-        optimizer = pcmaps.get_optimizer_by_enum(
-            self.parameter_group.object.options.optimizer
-        )(
-            [x], lr=self.parameter_group.object.options.step_size
-        )
+        x = x.detach()
         
-        with torch.enable_grad():            
-            for i_data_proj_epoch in range(self.options.num_data_projection_epochs):
-                for batch_data in self.dataloader:
-                    x.grad = None
-                    optimizer.zero_grad()
-                    self.forward_model.zero_grad()
-                    
-                    self.set_object_data_to_forward_model(x)
-                    input_data, y_true = self.prepare_batch_data(batch_data)
-                    y_pred = self.forward_model(*input_data)
-                    
-                    # Data fidelity term.
-                    batch_loss = self.loss_function(
-                        y_pred[:, self.dataset.valid_pixel_mask], y_true[:, self.dataset.valid_pixel_mask]
-                    )
-                                        
-                    # Proximal term (skipped for the first outer epoch).
-                    if self.options.proximal_penalty > 0 and self.current_epoch > 0: 
-                        reg_prox = self.options.proximal_penalty / 2 * (
-                            x - self.v + self.u
-                        ).norm() ** 2
-                        batch_loss = batch_loss + reg_prox
-
-                    batch_loss.backward()
-                    self.run_post_differentiation_hooks(input_data, y_true)
-                    optimizer.step()
-                    self.step_all_optimizers()
-                    optimizer.zero_grad()
-                    self.forward_model.zero_grad()
-                    
-                    self.loss_tracker.update_batch_loss_with_value(batch_loss.item())
-                self.loss_tracker.conclude_epoch()
-                self.loss_tracker.print_latest()
-        self.x = x.detach()
+        self.ptychi_task.reconstructor.parameter_group.object.set_data(x)
+        
+        for _ in range(self.options.num_data_projection_epochs):
+            # Run one epoch of data fidelity term optimization with Pty-Chi.
+            self.ptychi_task.run(1)
+            
+            # Proximal term step.
+            if self.current_epoch > 0 and self.use_admm():
+                x = self.ptychi_task.reconstructor.parameter_group.object.data
+                x = x - self.options.proximal_penalty * (x - self.v + self.u)
+                self.ptychi_task.reconstructor.parameter_group.object.set_data(x)
+        self.x = self.ptychi_task.reconstructor.parameter_group.object.data
         self.num_data_projections += 1
-    
+
     def project_to_prior(self):
         input = self.x + self.u
         _, orig_img = ip.object_to_image(input, dtype=self.pipe.unet.dtype)

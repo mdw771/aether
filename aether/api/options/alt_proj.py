@@ -33,8 +33,12 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     it will be added.
     """
     
-    loss_function: pcapi.enums.LossFunctions = pcapi.enums.LossFunctions.MSE_SQRT
-    """The loss function to calculate physical guidance."""
+    data_projection_options: pcapi.options.task.PtychographyTaskOptions = field(
+        default_factory=pcapi.options.task.PtychographyTaskOptions
+    )
+    """The options object that will be passed to Pty-Chi to perform the
+    data fidelity term minimization during the data projection step.
+    """
     
     num_inference_steps: int = 50
     """The number of inference steps to use for the guided sampling."""
@@ -123,4 +127,3 @@ class AlternatingProjectionOptions(pcapi.options.task.PtychographyTaskOptions):
     probe_position_options: AlternatingProjectionProbePositionOptions = field(default_factory=AlternatingProjectionProbePositionOptions)
     
     opr_mode_weight_options: AlternatingProjectionOPRModeWeightsOptions = field(default_factory=AlternatingProjectionOPRModeWeightsOptions)
-    
