@@ -1,5 +1,6 @@
 workspace/
-models/
+models/*
+!models/place_models_here.txt
 
 *.png
 
