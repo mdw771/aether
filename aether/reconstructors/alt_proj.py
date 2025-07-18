@@ -170,7 +170,10 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         if self.current_epoch == 0 or not self.use_admm():
             x = self.x
         else:
-            x = self.v - self.u
+            x = (
+                self.v if not self.options.include_dual_in_data_projection_initialization 
+                else self.v - self.u
+            )
         x = x.detach()
         
         self.ptychi_task.reconstructor.parameter_group.object.set_data(x)

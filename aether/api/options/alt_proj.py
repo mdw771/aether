@@ -40,6 +40,11 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     data fidelity term minimization during the data projection step.
     """
     
+    include_dual_in_data_projection_initialization: bool = True
+    """If True, the prime variable for the data projection subproblem is initialized
+    as `x = v - u` instead of `x = v`.
+    """
+    
     num_inference_steps: int = 50
     """The number of inference steps to use for the guided sampling."""
     
