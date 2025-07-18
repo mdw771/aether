@@ -17,6 +17,28 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     (i.e., a 2D list of strings).
     """
     
+    edit_phase: bool = True
+    """If True, the phase of the object will be edited during prior projection.
+    If False, the phase is kept as is if `constant_phase_value` is not provided;
+    otherwise, the phase is replaced with the given constant.
+    """
+    
+    constant_phase_value: Optional[float] = None
+    """The constant phase value to use when `edit_phase` is False. If None, the phase
+    is kept as is.
+    """
+    
+    edit_magnitude: bool = False
+    """If True, the magnitude of the object will be edited during prior projection.
+    If False, the magnitude is kept as is if `constant_magnitude_value` is not provided;
+    otherwise, the magnitude is replaced with the given constant.
+    """
+    
+    constant_magnitude_value: Optional[float] = None
+    """The constant magnitude value to use when `edit_magnitude` is False. If None, the
+    magnitude is kept as is.
+    """
+    
     text_guidance_scale: Union[float, list[float]] = 7
     """The guidance scale to use for the guided sampling. If a list of floats is provided,
     it will be assumed that each element specifies the value for a certain slice.
@@ -83,6 +105,16 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     match_stats_of_prior_projected_image: bool = False
     """If True, after each prior projection, the mean and standard deviation of the 
     prior-projected image will be matched to those of the data-projected image.
+    """
+    
+    stats_matching_threshold: float | list[float] = 0.5
+    """The absolute difference threshold used to generate the mask for stats matching.
+    The algorithm calculates the absolute difference between the normalized images before
+    and after editing; mean and standard deviation are only calculated on pixels where the
+    absolute change is less than this threshold. Set to 0 ti disable stats matching; set
+    to 1 to calculate stats using all pixels. If a list of floats is provided, it will be
+    assumed that each element specifies the value for a certain slice. This field is disregarded
+    if `match_stats_of_prior_projected_image` is False.
     """
     
     forward_model_class: pcapi.enums.ForwardModels = pcapi.enums.ForwardModels.PLANAR_PTYCHOGRAPHY

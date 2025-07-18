@@ -192,46 +192,74 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
 
     def project_to_prior(self):
         input = self.x + self.u
-        _, orig_img = ip.object_to_image(input, dtype=self.pipe.unet.dtype)
+        orig_img_mag, orig_img_phase = ip.object_to_image(input, dtype=self.pipe.unet.dtype)
         
-        edited_imgs = []
-        for i_slice, orig_img_slice in enumerate(orig_img):
-            orig_img_slice = self.image_normalizer.normalize(orig_img_slice.float()).to(self.pipe.unet.dtype)
-            
-            _ = self.pipe.invert(
-                image=orig_img_slice,
-                num_inversion_steps=self.options.num_inference_steps,
-                skip=0.1,
-                generator=self.generator
-            )
+        edited_phase_imgs = []
+        edited_mag_imgs = []
+        for i_part, orig_img in enumerate([orig_img_phase, orig_img_mag]):
+            if i_part == 0 and not self.options.edit_phase:
+                if self.options.constant_phase_value is None:
+                    edited_phase_imgs.append(orig_img)
+                else:
+                    edited_phase_imgs.append(torch.full_like(orig_img, self.options.constant_phase_value))
+            elif i_part == 1 and not self.options.edit_magnitude:
+                if self.options.constant_magnitude_value is None:
+                    edited_mag_imgs.append(orig_img)
+                else:
+                    edited_mag_imgs.append(torch.full_like(orig_img, self.options.constant_magnitude_value))
+            else:
+                for i_slice, orig_img_slice in enumerate(orig_img):
+                    orig_img_slice_normalized = self.image_normalizer.normalize(orig_img_slice.float()).to(self.pipe.unet.dtype)
+                    
+                    _ = self.pipe.invert(
+                        image=orig_img_slice_normalized,
+                        num_inversion_steps=self.options.num_inference_steps,
+                        skip=0.1,
+                        generator=self.generator
+                    )
 
-            img_slice = self.pipe(
-                editing_prompt=self.get_slice_specific_option_value(
-                    self.options.editing_prompt, i_slice, slice_value_is_list=True
-                ),
-                reverse_editing_direction=self.options.remove_concept,
-                edit_guidance_scale=self.get_slice_specific_option_value(
-                    self.options.text_guidance_scale, i_slice
-                ),
-                edit_threshold=self.get_slice_specific_option_value(
-                    self.options.editing_threshold, i_slice
-                ),
-                generator=self.generator
-            )
-            
-            img_slice = ip.pil_image_to_tensor(img_slice.images[0], dtype=self.x.real.dtype, device=self.x.device)
-            img_slice = self.image_normalizer.unnormalize(img_slice)
-            
-            # Match mean and std within ROI.
-            if self.options.match_stats_of_prior_projected_image:
-                bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
-                img_slice = ip.match_mean_std(img_slice, orig_img_slice[None, ...], (0, 0, *bbox))
-
-            edited_imgs.append(img_slice)
-        edited_imgs = torch.cat(edited_imgs, dim=0)
+                    img_slice = self.pipe(
+                        editing_prompt=self.get_slice_specific_option_value(
+                            self.options.editing_prompt, i_slice, slice_value_is_list=True
+                        ),
+                        reverse_editing_direction=self.options.remove_concept,
+                        edit_guidance_scale=self.get_slice_specific_option_value(
+                            self.options.text_guidance_scale, i_slice
+                        ),
+                        edit_threshold=self.get_slice_specific_option_value(
+                            self.options.editing_threshold, i_slice
+                        ),
+                        generator=self.generator
+                    )
+                    
+                    img_slice = ip.pil_image_to_tensor(img_slice.images[0], dtype=self.x.real.dtype, device=self.x.device)
+                    
+                    # Match mean and std within ROI.
+                    if self.options.match_stats_of_prior_projected_image:
+                        roi_bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
+                        threshold = self.get_slice_specific_option_value(
+                            self.options.stats_matching_threshold, i_slice, slice_value_is_list=False
+                        )
+                        if threshold > 0:
+                            mask = (img_slice - orig_img_slice_normalized[None, ...]).abs() < threshold
+                            mask_selector = torch.zeros_like(mask, dtype=torch.bool)
+                            mask_selector[(0, 0, *roi_bbox)] = True
+                            mask = mask & mask_selector
+                            if torch.count_nonzero(mask) > 0:
+                                img_slice = ip.match_mean_std(img_slice, orig_img_slice_normalized[None, ...], mask=mask)
+                            else:
+                                logger.info("Skipping stats matching because no hot pixels are found within ROI.")
+                            
+                    img_slice = self.image_normalizer.unnormalize(img_slice)
+                    if i_part == 0:
+                        edited_phase_imgs.append(img_slice)
+                    else:
+                        edited_mag_imgs.append(img_slice)
+        edited_phase_imgs = torch.cat(edited_phase_imgs, dim=0)
+        edited_mag_imgs = torch.cat(edited_mag_imgs, dim=0)
         v = ip.image_to_object(
-            img_mag=self.x.abs().unsqueeze(1).repeat(1, 3, 1, 1), 
-            img_phase=edited_imgs
+            img_mag=edited_mag_imgs,
+            img_phase=edited_phase_imgs
         )
         self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
         self.num_prior_projections += 1

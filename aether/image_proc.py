@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Union, Optional
 
 import torch
 import numpy as np
@@ -49,13 +49,24 @@ class ImageNormalizer:
         return img * (self.max_val - self.min_val) + self.min_val
 
 
-def match_mean_std(img: torch.Tensor, reference: torch.Tensor, roi_slicer: tuple[slice, ...]):
+def match_mean_std(
+    img: torch.Tensor, 
+    reference: torch.Tensor, 
+    roi_slicer: Optional[tuple[slice, ...]] = None,
+    mask: Optional[torch.Tensor] = None,
+):
     """Match the mean and std of the image to the target mean and std within the ROI.
     """
-    current_mean = img[roi_slicer].mean()
-    current_std = img[roi_slicer].std()
-    target_mean = reference[roi_slicer].mean()
-    target_std = reference[roi_slicer].std()
+    if roi_slicer is not None:
+        slicer = roi_slicer
+    elif mask is not None:
+        slicer = mask
+    else:
+        slicer = slice(None)
+    current_mean = img[slicer].mean()
+    current_std = img[slicer].std()
+    target_mean = reference[slicer].mean()
+    target_std = reference[slicer].std()
     return (img - current_mean) * target_std / current_std + target_mean
 
 
