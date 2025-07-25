@@ -3,12 +3,22 @@ from typing import Union, Optional
 import torch
 import numpy as np
 from PIL import Image
+import ptychi.image_proc as pcip
+
 import aether.maths as maths
 
 class ImageNormalizer:
     """Normalize or unnormalize an image.
     """
     def __init__(self, min_quantile: float = 0.01, max_quantile: float = 0.99):
+        """Image normalizer.
+        
+        Parameters
+        ----------
+        min_quantile, max_quantile: float
+            The minimum and maximum quantiles to use when normalizing the image.
+            Values should be given in the range of [0, 1].
+        """
         self.min_quantile = min_quantile
         self.max_quantile = max_quantile
         self.min_val = None
@@ -114,7 +124,8 @@ def image_to_object(
 
 def object_to_image(
     obj: torch.Tensor,
-    dtype: torch.dtype = None
+    dtype: Optional[torch.dtype] = None,
+    unwrap_phase: bool = False,
 ) -> torch.Tensor:
     """Convert a complex object tensor to an image assumed by the encoder.
     
@@ -122,6 +133,10 @@ def object_to_image(
     ----------
     obj: torch.Tensor
         A (n_slices, h, w) tensor giving the complex object.
+    dtype: torch.dtype
+        The dtype of the output tensor.
+    unwrap_phase: bool
+        Whether to unwrap the phase of the object.
         
     Returns
     -------
@@ -134,7 +149,13 @@ def object_to_image(
     img_mag = mag.unsqueeze(1)
     img_mag = img_mag.repeat(1, 3, 1, 1)
     img_mag = img_mag.to(dtype)
-    phase = obj.angle()
+    if unwrap_phase:
+        phase = torch.stack(
+            [pcip.unwrap_phase_2d(obj[i, ...]) for i in range(obj.shape[0])],
+            dim=0
+        )
+    else:
+        phase = obj.angle()
     img_phase = phase.unsqueeze(1)
     img_phase = img_phase.repeat(1, 3, 1, 1)
     img_phase = img_phase.to(dtype)

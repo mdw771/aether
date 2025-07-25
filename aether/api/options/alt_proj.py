@@ -55,6 +55,9 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     it will be added.
     """
     
+    unwrap_phase_before_editing: bool = False
+    """If True, the phase of the object will be unwrapped before editing."""
+    
     data_projection_options: pcapi.options.task.PtychographyTaskOptions = field(
         default_factory=pcapi.options.task.PtychographyTaskOptions
     )

@@ -192,7 +192,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
 
     def project_to_prior(self):
         input = self.x + self.u
-        orig_img_mag, orig_img_phase = ip.object_to_image(input, dtype=self.pipe.unet.dtype)
+        orig_img_mag, orig_img_phase = ip.object_to_image(
+            input, 
+            dtype=self.pipe.unet.dtype, 
+            unwrap_phase=self.options.unwrap_phase_before_editing
+        )
         
         edited_phase_imgs = []
         edited_mag_imgs = []
