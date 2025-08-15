@@ -50,6 +50,11 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     the value for a certain slice.
     """
     
+    editing_skip: Union[float, list[float]] = 0.1
+    """The skip factor for the inversion process. A smaller value means more noise will
+    be added to the input image, resulting in larger changes to the image.
+    """
+    
     remove_concept: bool = True
     """If True, the concept in the prompt will be removed from the image. Otherwise, 
     it will be added.
@@ -81,6 +86,9 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     
     num_data_projection_epochs: int = 20
     """The number of epochs for data projection."""
+    
+    prior_projection_starting_epoch: int = 0
+    """The outer iteration index at which prior projection starts."""
     
     max_num_prior_projections: int = np.inf
     """The maximum allowable number of prior projections. Prior projection no longer runs
@@ -114,7 +122,7 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     """The absolute difference threshold used to generate the mask for stats matching.
     The algorithm calculates the absolute difference between the normalized images before
     and after editing; mean and standard deviation are only calculated on pixels where the
-    absolute change is less than this threshold. Set to 0 ti disable stats matching; set
+    absolute change is less than this threshold. Set to 0 to disable stats matching; set
     to 1 to calculate stats using all pixels. If a list of floats is provided, it will be
     assumed that each element specifies the value for a certain slice. This field is disregarded
     if `match_stats_of_prior_projected_image` is False.

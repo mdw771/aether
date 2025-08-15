@@ -100,7 +100,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.num_data_projections = 0
         
     def use_admm(self) -> bool:
-        return self.num_prior_projections < self.options.max_num_prior_projections
+        return (
+            self.num_prior_projections < self.options.max_num_prior_projections
+        ) and (
+            self.current_epoch >= self.options.prior_projection_starting_epoch
+        )
         
     def set_object_data_to_forward_model(self, o_hat: torch.Tensor):
         """Set object data to the object function object in the forward model. 
@@ -167,7 +171,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                 return val[slice_idx]
         
     def project_to_data(self):
-        if self.current_epoch == 0 or not self.use_admm():
+        if self.current_epoch == 0 or not self.use_admm() or self.v.abs().max() == 0:
             x = self.x
         else:
             x = (
@@ -218,7 +222,9 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                     _ = self.pipe.invert(
                         image=orig_img_slice_normalized,
                         num_inversion_steps=self.options.num_inference_steps,
-                        skip=0.1,
+                        skip=self.get_slice_specific_option_value(
+                            self.options.editing_skip, i_slice
+                        ),
                         generator=self.generator
                     )
 
