@@ -1,8 +1,8 @@
 from typing import Union, Any
 import logging
 
-import numpy as np
 import torch
+import torchvision.transforms as T
 from diffusers import LEditsPPPipelineStableDiffusion
 from ptychi.reconstructors.ad_ptychography import AutodiffPtychographyReconstructor
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
@@ -207,6 +207,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             orig_img_mag = orig_img_mag[:, :, *bbox_slicer]
             orig_img_phase = orig_img_phase[:, :, *bbox_slicer]
             
+        orig_size = orig_img_mag.shape[-2:]
+        if self.options.resize_image_edited_to is not None:
+            orig_img_mag = T.Resize(self.options.resize_image_edited_to)(orig_img_mag)
+            orig_img_phase = T.Resize(self.options.resize_image_edited_to)(orig_img_phase)
+
         edited_phase_imgs = []
         edited_mag_imgs = []
         for i_part, orig_img in enumerate([orig_img_phase, orig_img_mag]):
@@ -275,7 +280,12 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                         edited_mag_imgs.append(img_slice)
         edited_phase_imgs = torch.cat(edited_phase_imgs, dim=0)
         edited_mag_imgs = torch.cat(edited_mag_imgs, dim=0)
-        v = ip.image_to_object(
+        
+        if self.options.resize_image_edited_to is not None:
+            edited_mag_imgs = T.Resize(orig_size)(edited_mag_imgs)
+            edited_phase_imgs = T.Resize(orig_size)(edited_phase_imgs)
+        
+        edited_obj = ip.image_to_object(
             img_mag=edited_mag_imgs,
             img_phase=edited_phase_imgs
         )

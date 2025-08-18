@@ -43,6 +43,13 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     """If True, only the region inside the bounding box of all probe positions will be
     edited.
     """
+    
+    resize_image_edited_to: Optional[tuple[int, int]] = None
+    """If provided, images are resized to the given size before editing. This bypasses
+    the implicit size restrctions due to the cross attention mask of LEDTS++. It helps
+    the diffusion model by giving it a favorable image size such as 512x512.
+    """
+
     text_guidance_scale: Union[float, list[float]] = 7
     """The guidance scale to use for the guided sampling. If a list of floats is provided,
     it will be assumed that each element specifies the value for a certain slice.
