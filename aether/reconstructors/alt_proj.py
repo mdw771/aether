@@ -10,7 +10,6 @@ import ptychi.maps as pcmaps
 from ptychi.io_handles import PtychographyDataset
 from ptychi.api.task import PtychographyTask
 
-import aether.maths as maths
 import aether.api as api
 from aether.io import HuggingFaceModelLoader
 import aether.image_proc as ip
@@ -196,12 +195,18 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
 
     def project_to_prior(self):
         input = self.x + self.u
+
         orig_img_mag, orig_img_phase = ip.object_to_image(
             input, 
             dtype=self.pipe.unet.dtype, 
             unwrap_phase=self.options.unwrap_phase_before_editing
         )
-        
+        bbox_slicer = (slice(None),)
+        if self.options.only_edit_bbox:
+            bbox_slicer = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
+            orig_img_mag = orig_img_mag[:, :, *bbox_slicer]
+            orig_img_phase = orig_img_phase[:, :, *bbox_slicer]
+            
         edited_phase_imgs = []
         edited_mag_imgs = []
         for i_part, orig_img in enumerate([orig_img_phase, orig_img_mag]):
@@ -246,7 +251,10 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                     
                     # Match mean and std within ROI.
                     if self.options.match_stats_of_prior_projected_image:
-                        roi_bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
+                        if self.options.only_edit_bbox:
+                            roi_bbox = (slice(None), slice(None))
+                        else:
+                            roi_bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
                         threshold = self.get_slice_specific_option_value(
                             self.options.stats_matching_threshold, i_slice, slice_value_is_list=False
                         )
@@ -271,6 +279,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             img_mag=edited_mag_imgs,
             img_phase=edited_phase_imgs
         )
+        if self.options.only_edit_bbox:
+            input[:, *bbox_slicer] = edited_obj
+            v = input
+        else:
+            v = edited_obj
         self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
         self.num_prior_projections += 1
 

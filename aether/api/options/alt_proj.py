@@ -38,7 +38,11 @@ class AlternatingProjectionReconstructorOptions(pcapi.options.ad_ptychography.Au
     """The constant magnitude value to use when `edit_magnitude` is False. If None, the
     magnitude is kept as is.
     """
-    
+   
+    only_edit_bbox: bool = False
+    """If True, only the region inside the bounding box of all probe positions will be
+    edited.
+    """
     text_guidance_scale: Union[float, list[float]] = 7
     """The guidance scale to use for the guided sampling. If a list of floats is provided,
     it will be assumed that each element specifies the value for a certain slice.
