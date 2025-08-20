@@ -12,9 +12,9 @@ from ptychi.reconstructors.base import Reconstructor
 import ptychi.maps as maps
 import ptychi.utils as utils
 
-from aether.reconstructors.pnp import PnPReconstructor
+import aether.reconstructors.pnp
 import aether.io as fio
-
+import aether.api as api
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,10 @@ class PnPPtychographyTask(PtychographyTask):
             img2img = True
         else:
             img2img = False
-        if hasattr(self.reconstructor_options, "prior_projection_options") and (hasattr(self.reconstructor_options.prior_projection_options, "model_path")):
+        if (
+            hasattr(self.reconstructor_options, "prior_projection_options") 
+            and (hasattr(self.reconstructor_options.prior_projection_options, "model_path"))
+        ):
             model_path = self.reconstructor_options.prior_projection_options.model_path
         elif hasattr(self.reconstructor_options, "model_path"):
             model_path = self.reconstructor_options.model_path
@@ -79,7 +82,7 @@ class PnPPtychographyTask(PtychographyTask):
                 img2img=img2img,
             )
         else:
-            if isinstance(self, PnPPtychographyTask):
+            if isinstance(self.options.reconstructor_options.prior_projection_options, api.LEDITSPPOptions):
                 pipe_class = diffusers.LEditsPPPipelineStableDiffusion
             else:
                 pipe_class = diffusers.DiffusionPipeline
@@ -100,7 +103,7 @@ class PnPPtychographyTask(PtychographyTask):
             opr_mode_weights=None
         )
 
-        reconstructor_class = PnPReconstructor
+        reconstructor_class = self.select_reconstructor_class()
         logger.info(f"Using {reconstructor_class.__name__}.")
         
         self.reconstructor = reconstructor_class(
@@ -109,3 +112,11 @@ class PnPPtychographyTask(PtychographyTask):
             options=self.reconstructor_options,
         )
         self.reconstructor.build()
+        
+    def select_reconstructor_class(self) -> type[aether.reconstructors.pnp.PnPReconstructor]:
+        if isinstance(self.reconstructor_options.prior_projection_options, api.LEDITSPPOptions):
+            return aether.reconstructors.pnp.PnPLEDITSPPReconstructor
+        else:
+            raise ValueError(
+                "Unable to infer reconstructor class from reconstructor_options.prior_projection_options."
+            )

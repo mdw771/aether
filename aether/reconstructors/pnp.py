@@ -12,25 +12,22 @@ import aether.api as api
 from aether.io import HuggingFaceModelLoader
 import aether.image_proc as ip
 
-
 logger = logging.getLogger(__name__)
 
 
 class PnPReconstructor(IterativeReconstructor):
     
     options: api.PnPReconstructorOptions
-    pipe: LEditsPPPipelineStableDiffusion
 
     def __init__(
         self,
         parameter_group: PtychographyParameterGroup,
-        model_loader: HuggingFaceModelLoader,
         options: "api.PnPReconstructorOptions",
         *args, **kwargs
     ):
         """
         The alternating projection reconstructor. This algorithm uses a relaxed ADMM
-        algorithm to integrate analytical solver and a img2img diffusion model. The
+        algorithm to integrate analytical solver and an image processor. The
         relaxed ADMM can optionally reduce to alternating projection. 
         
         The conventions of ADMM are based on https://engineering.purdue.edu/~bouman/Plug-and-Play/webdocs/GlobalSIP2013a.pdf;
@@ -38,10 +35,6 @@ class PnPReconstructor(IterativeReconstructor):
         """
         super().__init__(parameter_group, options=options, dataset=None, *args, **kwargs)
         self.check_inputs()
-        
-        self.model_loader = model_loader
-        self.pipe: LEditsPPPipelineStableDiffusion = None
-        self.forward_model = None
                 
         self.x = None
         self.v = None
@@ -51,15 +44,11 @@ class PnPReconstructor(IterativeReconstructor):
         self.num_data_projections = 0
         
         self.image_normalizer = ip.ImageNormalizer()
-        
-        self.generator = None
-                
+                        
     def check_inputs(self, *args, **kwargs):
         super().check_inputs(*args, **kwargs)
         
     def build(self):
-        self.build_pipe()
-        self.build_generator()
         super().build()
         self.build_variables()
         self.build_ptychi_task()
@@ -68,19 +57,9 @@ class PnPReconstructor(IterativeReconstructor):
         
     def build_dataloader(self):
         pass
-
-    def build_pipe(self):
-        self.model_loader.load()
-        self.pipe = self.model_loader.pipe
-        self.pipe.to("cuda")
         
     def build_ptychi_task(self):
         self.ptychi_task = PtychographyTask(self.options.data_projection_options)
-        
-    def build_generator(self):
-        self.generator = torch.Generator(device=self.pipe.device)
-        if self.options.prior_projection_options.generator_seed is not None:
-            self.generator.manual_seed(self.options.prior_projection_options.generator_seed)
         
     def build_variables(self):
         self.x = self.parameter_group.object.data.detach()
@@ -106,19 +85,6 @@ class PnPReconstructor(IterativeReconstructor):
         ) and (
             self.current_epoch >= self.options.prior_projection_starting_epoch
         )
-        
-    def set_object_data_to_forward_model(self, o_hat: torch.Tensor):
-        """Set object data to the object function object in the forward model. 
-        We can't use object.set_data() here because it is an in-place operation
-        that will break the gradient.
-        """
-        if isinstance(self.forward_model.object.tensor.data, torch.nn.Parameter):
-            raise TypeError(
-                "The tensor in the ComplexTensor of the object should not "
-                "be a torch.nn.Parameter. When creating the object, set "
-                "`data_as_parameter=False`."
-            )
-        self.forward_model.object.tensor.data = torch.stack([o_hat.real, o_hat.imag], dim=-1)
     
     def sync_data_to_object(self):
         if self.options.use_prior_projected_data_as_final_result:
@@ -195,6 +161,78 @@ class PnPReconstructor(IterativeReconstructor):
         self.x = self.ptychi_task.reconstructor.parameter_group.object.data
         self.num_data_projections += 1
 
+    def project_to_prior(self):
+        raise NotImplementedError("Not implemented in base class.")
+        
+    def relax_prior_projection_variable(self):
+        self.v = self.options.update_relaxation * self.v + (1 - self.options.update_relaxation) * self.x
+
+    def update_dual(self):
+        self.u = self.u + self.x - self.v
+        
+    def run_admm_epoch(self):
+        self.project_to_data()
+        if self.use_admm():
+            self.project_to_prior()
+            self.relax_prior_projection_variable()
+            self.update_dual()
+            
+    def run_pre_epoch_hooks(self):
+        pass
+    
+    def run(self, n_epochs: int = None):
+        n_epochs = self.options.num_epochs if n_epochs is None else n_epochs
+        with torch.no_grad():
+            for _ in range(n_epochs):
+                self.run_pre_epoch_hooks()
+                self.run_admm_epoch()
+                self.sync_data_to_object()
+                
+                self.pbar.update(1)
+                self.current_epoch += 1
+
+
+class PnPGenerativeEditingReconstructor(PnPReconstructor):
+    def __init__(
+        self,
+        parameter_group: PtychographyParameterGroup,
+        model_loader: HuggingFaceModelLoader,
+        options: "api.PnPReconstructorOptions",
+        *args, **kwargs
+    ):
+        """
+        The alternating projection reconstructor. This algorithm uses a relaxed ADMM
+        algorithm to integrate analytical solver and a generative image editing model. The
+        relaxed ADMM can optionally reduce to alternating projection. 
+        
+        The conventions of ADMM are based on https://engineering.purdue.edu/~bouman/Plug-and-Play/webdocs/GlobalSIP2013a.pdf;
+        the relaxed ADMM algorithm is based on https://arxiv.org/abs/1704.02712.
+        """
+        super().__init__(parameter_group, options=options, *args, **kwargs)
+        self.check_inputs()
+        
+        self.model_loader = model_loader
+        self.pipe: LEditsPPPipelineStableDiffusion = None
+        
+        self.generator = None
+        
+    def build(self):
+        self.build_pipe()
+        self.build_generator()
+        super().build()
+        
+    def build_generator(self):
+        self.generator = torch.Generator(device=self.pipe.device)
+        if self.options.prior_projection_options.generator_seed is not None:
+            self.generator.manual_seed(self.options.prior_projection_options.generator_seed)
+        
+    def build_pipe(self):
+        self.model_loader.load()
+        self.pipe = self.model_loader.pipe
+        self.pipe.to("cuda")
+
+
+class PnPLEDITSPPReconstructor(PnPGenerativeEditingReconstructor):
     def project_to_prior(self):
         assert isinstance(self.options.prior_projection_options, api.LEDITSPPOptions)
         
@@ -300,30 +338,3 @@ class PnPReconstructor(IterativeReconstructor):
             v = edited_obj
         self.v = v
         self.num_prior_projections += 1
-        
-    def relax_prior_projection_variable(self):
-        self.v = self.options.update_relaxation * self.v + (1 - self.options.update_relaxation) * self.x
-
-    def update_dual(self):
-        self.u = self.u + self.x - self.v
-        
-    def run_admm_epoch(self):
-        self.project_to_data()
-        if self.use_admm():
-            self.project_to_prior()
-            self.relax_prior_projection_variable()
-            self.update_dual()
-            
-    def run_pre_epoch_hooks(self):
-        pass
-    
-    def run(self, n_epochs: int = None):
-        n_epochs = self.options.num_epochs if n_epochs is None else n_epochs
-        with torch.no_grad():
-            for _ in range(n_epochs):
-                self.run_pre_epoch_hooks()
-                self.run_admm_epoch()
-                self.sync_data_to_object()
-                
-                self.pbar.update(1)
-                self.current_epoch += 1
