@@ -52,7 +52,7 @@ class TestDiffusionPnP(tutils.TungstenDataTester):
         options.reconstructor_options.update_relaxation = 0.9
         options.reconstructor_options.model_path = "stable-diffusion-v1-5/stable-diffusion-v1-5"
 
-        task = api.AlternatingProjectionDiffusionPtychographyTask(options)
+        task = api.PnPPtychographyTask(options)
         task.run()
 
         recon = task.reconstructor.parameter_group.object.data.detach().cpu().numpy()

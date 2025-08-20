@@ -4,10 +4,8 @@ import logging
 import torch
 import torchvision.transforms as T
 from diffusers import LEditsPPPipelineStableDiffusion
-from ptychi.reconstructors.ad_ptychography import AutodiffPtychographyReconstructor
+from ptychi.reconstructors.base import IterativeReconstructor
 from ptychi.data_structures.parameter_group import PtychographyParameterGroup
-import ptychi.maps as pcmaps
-from ptychi.io_handles import PtychographyDataset
 from ptychi.api.task import PtychographyTask
 
 import aether.api as api
@@ -18,17 +16,16 @@ import aether.image_proc as ip
 logger = logging.getLogger(__name__)
 
 
-class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
+class PnPReconstructor(IterativeReconstructor):
     
-    options: api.AlternatingProjectionReconstructorOptions
+    options: api.PnPReconstructorOptions
     pipe: LEditsPPPipelineStableDiffusion
 
     def __init__(
         self,
         parameter_group: PtychographyParameterGroup,
-        dataset: PtychographyDataset,
         model_loader: HuggingFaceModelLoader,
-        options: "api.GuidedDiffusionReconstructorOptions",
+        options: "api.PnPReconstructorOptions",
         *args, **kwargs
     ):
         """
@@ -39,12 +36,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         The conventions of ADMM are based on https://engineering.purdue.edu/~bouman/Plug-and-Play/webdocs/GlobalSIP2013a.pdf;
         the relaxed ADMM algorithm is based on https://arxiv.org/abs/1704.02712.
         """
-        super().__init__(parameter_group, dataset=dataset, options=options, *args, **kwargs)
+        super().__init__(parameter_group, options=options, dataset=None, *args, **kwargs)
         self.check_inputs()
         
         self.model_loader = model_loader
         self.pipe: LEditsPPPipelineStableDiffusion = None
-        self.loss_function = pcmaps.get_loss_function_by_enum(options.loss_function)()
         self.forward_model = None
                 
         self.x = None
@@ -57,6 +53,9 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.image_normalizer = ip.ImageNormalizer()
         
         self.generator = None
+                
+    def check_inputs(self, *args, **kwargs):
+        super().check_inputs(*args, **kwargs)
         
     def build(self):
         self.build_pipe()
@@ -64,6 +63,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         super().build()
         self.build_variables()
         self.build_ptychi_task()
+        self.build_counter()
+        self.build_object_roi_bbox()
+        
+    def build_dataloader(self):
+        pass
 
     def build_pipe(self):
         self.model_loader.load()
@@ -75,18 +79,8 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         
     def build_generator(self):
         self.generator = torch.Generator(device=self.pipe.device)
-        if self.options.generator_seed is not None:
-            self.generator.manual_seed(self.options.generator_seed)
-        
-    def build_forward_model(self):
-        self.forward_model_params["wavelength_m"] = self.dataset.wavelength_m
-        self.forward_model_params["detector_size"] = tuple(self.dataset.patterns.shape[-2:])
-        self.forward_model_params["free_space_propagation_distance_m"] = self.dataset.free_space_propagation_distance_m
-        self.forward_model_params["pad_for_shift"] = self.options.forward_model_options.pad_for_shift
-        self.forward_model_params["low_memory_mode"] = self.options.forward_model_options.low_memory_mode
-        self.forward_model = self.forward_model_class(
-            self.parameter_group, **self.forward_model_params
-        )
+        if self.options.prior_projection_options.generator_seed is not None:
+            self.generator.manual_seed(self.options.prior_projection_options.generator_seed)
         
     def build_variables(self):
         self.x = self.parameter_group.object.data.detach()
@@ -97,6 +91,14 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         super().build_counter()
         self.num_prior_projections = 0
         self.num_data_projections = 0
+        
+    def build_object_roi_bbox(self):
+        self.parameter_group.object.update_pos_origin_coordinates(
+            self.ptychi_task.reconstructor.parameter_group.probe_positions.data
+        )
+        self.parameter_group.object.build_roi_bounding_box(
+            self.ptychi_task.reconstructor.parameter_group.probe_positions
+        )
         
     def use_admm(self) -> bool:
         return (
@@ -194,60 +196,62 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.num_data_projections += 1
 
     def project_to_prior(self):
+        assert isinstance(self.options.prior_projection_options, api.LEDITSPPOptions)
+        
         input = self.x + self.u
 
         orig_img_mag, orig_img_phase = ip.object_to_image(
             input, 
             dtype=self.pipe.unet.dtype, 
-            unwrap_phase=self.options.unwrap_phase_before_editing
+            unwrap_phase=self.options.prior_projection_options.unwrap_phase_before_editing
         )
         bbox_slicer = (slice(None),)
-        if self.options.only_edit_bbox:
+        if self.options.prior_projection_options.only_edit_bbox:
             bbox_slicer = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
             orig_img_mag = orig_img_mag[:, :, *bbox_slicer]
             orig_img_phase = orig_img_phase[:, :, *bbox_slicer]
             
         orig_size = orig_img_mag.shape[-2:]
-        if self.options.resize_image_edited_to is not None:
-            orig_img_mag = T.Resize(self.options.resize_image_edited_to)(orig_img_mag)
-            orig_img_phase = T.Resize(self.options.resize_image_edited_to)(orig_img_phase)
+        if self.options.prior_projection_options.resize_image_edited_to is not None:
+            orig_img_mag = T.Resize(self.options.prior_projection_options.resize_image_edited_to)(orig_img_mag)
+            orig_img_phase = T.Resize(self.options.prior_projection_options.resize_image_edited_to)(orig_img_phase)
 
         edited_phase_imgs = []
         edited_mag_imgs = []
         for i_part, orig_img in enumerate([orig_img_phase, orig_img_mag]):
-            if i_part == 0 and not self.options.edit_phase:
-                if self.options.constant_phase_value is None:
+            if i_part == 0 and not self.options.prior_projection_options.edit_phase:
+                if self.options.prior_projection_options.constant_phase_value is None:
                     edited_phase_imgs.append(orig_img)
                 else:
-                    edited_phase_imgs.append(torch.full_like(orig_img, self.options.constant_phase_value))
-            elif i_part == 1 and not self.options.edit_magnitude:
-                if self.options.constant_magnitude_value is None:
+                    edited_phase_imgs.append(torch.full_like(orig_img, self.options.prior_projection_options.constant_phase_value))
+            elif i_part == 1 and not self.options.prior_projection_options.edit_magnitude:
+                if self.options.prior_projection_options.constant_magnitude_value is None:
                     edited_mag_imgs.append(orig_img)
                 else:
-                    edited_mag_imgs.append(torch.full_like(orig_img, self.options.constant_magnitude_value))
+                    edited_mag_imgs.append(torch.full_like(orig_img, self.options.prior_projection_options.constant_magnitude_value))
             else:
                 for i_slice, orig_img_slice in enumerate(orig_img):
                     orig_img_slice_normalized = self.image_normalizer.normalize(orig_img_slice.float()).to(self.pipe.unet.dtype)
                     
                     _ = self.pipe.invert(
                         image=orig_img_slice_normalized,
-                        num_inversion_steps=self.options.num_inference_steps,
+                        num_inversion_steps=self.options.prior_projection_options.num_inference_steps,
                         skip=self.get_slice_specific_option_value(
-                            self.options.editing_skip, i_slice
+                            self.options.prior_projection_options.editing_skip, i_slice
                         ),
                         generator=self.generator
                     )
 
                     img_slice = self.pipe(
                         editing_prompt=self.get_slice_specific_option_value(
-                            self.options.editing_prompt, i_slice, slice_value_is_list=True
+                            self.options.prior_projection_options.editing_prompt, i_slice, slice_value_is_list=True
                         ),
-                        reverse_editing_direction=self.options.remove_concept,
+                        reverse_editing_direction=self.options.prior_projection_options.remove_concept,
                         edit_guidance_scale=self.get_slice_specific_option_value(
-                            self.options.text_guidance_scale, i_slice
+                            self.options.prior_projection_options.text_guidance_scale, i_slice
                         ),
                         edit_threshold=self.get_slice_specific_option_value(
-                            self.options.editing_threshold, i_slice
+                            self.options.prior_projection_options.editing_threshold, i_slice
                         ),
                         generator=self.generator
                     )
@@ -255,13 +259,13 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
                     img_slice = ip.pil_image_to_tensor(img_slice.images[0], dtype=self.x.real.dtype, device=self.x.device)
                     
                     # Match mean and std within ROI.
-                    if self.options.match_stats_of_prior_projected_image:
-                        if self.options.only_edit_bbox:
+                    if self.options.prior_projection_options.match_stats_of_prior_projected_image:
+                        if self.options.prior_projection_options.only_edit_bbox:
                             roi_bbox = (slice(None), slice(None))
                         else:
                             roi_bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
                         threshold = self.get_slice_specific_option_value(
-                            self.options.stats_matching_threshold, i_slice, slice_value_is_list=False
+                            self.options.prior_projection_options.stats_matching_threshold, i_slice, slice_value_is_list=False
                         )
                         if threshold > 0:
                             mask = (img_slice - orig_img_slice_normalized[None, ...]).abs() < threshold
@@ -281,7 +285,7 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         edited_phase_imgs = torch.cat(edited_phase_imgs, dim=0)
         edited_mag_imgs = torch.cat(edited_mag_imgs, dim=0)
         
-        if self.options.resize_image_edited_to is not None:
+        if self.options.prior_projection_options.resize_image_edited_to is not None:
             edited_mag_imgs = T.Resize(orig_size)(edited_mag_imgs)
             edited_phase_imgs = T.Resize(orig_size)(edited_phase_imgs)
         
@@ -289,13 +293,16 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
             img_mag=edited_mag_imgs,
             img_phase=edited_phase_imgs
         )
-        if self.options.only_edit_bbox:
+        if self.options.prior_projection_options.only_edit_bbox:
             input[:, *bbox_slicer] = edited_obj
             v = input
         else:
             v = edited_obj
-        self.v = self.options.update_relaxation * v + (1 - self.options.update_relaxation) * self.x
+        self.v = v
         self.num_prior_projections += 1
+        
+    def relax_prior_projection_variable(self):
+        self.v = self.options.update_relaxation * self.v + (1 - self.options.update_relaxation) * self.x
 
     def update_dual(self):
         self.u = self.u + self.x - self.v
@@ -304,7 +311,11 @@ class AlternatingProjectionReconstructor(AutodiffPtychographyReconstructor):
         self.project_to_data()
         if self.use_admm():
             self.project_to_prior()
+            self.relax_prior_projection_variable()
             self.update_dual()
+            
+    def run_pre_epoch_hooks(self):
+        pass
     
     def run(self, n_epochs: int = None):
         n_epochs = self.options.num_epochs if n_epochs is None else n_epochs

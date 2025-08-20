@@ -6,13 +6,11 @@ from .options.guided_sampling import (
     GuidedDiffusionProbePositionOptions,
     GuidedDiffusionOPRModeWeightsOptions,
 )
-from .options.alt_proj import (
-    AlternatingProjectionOptions,
-    AlternatingProjectionReconstructorOptions,
-    AlternatingProjectionObjectOptions,
-    AlternatingProjectionProbeOptions,
-    AlternatingProjectionProbePositionOptions,
-    AlternatingProjectionOPRModeWeightsOptions,
+from .options.pnp import (
+    PnPOptions,
+    PnPReconstructorOptions,
+    PnPObjectOptions,
+    LEDITSPPOptions,
 )
 from .options.latent_admmdiff import (
     ADMMDiffOptions,
@@ -29,7 +27,6 @@ from .options.latent_dps import (
     LatentDPSProbePositionOptions,
 )
 from .task import (
-    GuidedDiffusionPtychographyTask, 
-    AlternatingProjectionDiffusionPtychographyTask
+    PnPPtychographyTask,
 )
 import aether.api.enums as enums
