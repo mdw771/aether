@@ -23,7 +23,7 @@ dependencies = [
     "accelerate==1.4.0",
     "transformers==4.49.0",
     "sentencepiece==0.2.0",
-    "ptychi@git+https://github.com/AdvancedPhotonSource/pty-chi.git",
+    "ptychi@git+https://github.com/AdvancedPhotonSource/pty-chi.git@d165f787b0f69c879332f7e8a2788ad992c1b912",
 ]
 dynamic = ["version"]
 
