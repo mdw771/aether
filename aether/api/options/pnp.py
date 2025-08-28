@@ -12,6 +12,12 @@ class PriorProjectionOptions(pcapi.base.Options):
 
 @dataclass
 class ImageEditingOptions(PriorProjectionOptions):
+    resize_image_edited_to: Optional[tuple[int, int]] = None
+    """If provided, images are resized to the given size before editing. This bypasses
+    the implicit size restrctions due to the cross attention mask of LEDTS++. It helps
+    the diffusion model by giving it a favorable image size such as 512x512.
+    """
+    
     edit_phase: bool = True
     """If True, the phase of the object will be edited during prior projection.
     If False, the phase is kept as is if `constant_phase_value` is not provided;
@@ -51,12 +57,6 @@ class LEDITSPPOptions(ImageEditingOptions):
     all slices. Multiple concepts can be given by providing a list of strings. To
     specify different prompts for different slices, provide a list of lists of strings 
     (i.e., a 2D list of strings).
-    """
-    
-    resize_image_edited_to: Optional[tuple[int, int]] = None
-    """If provided, images are resized to the given size before editing. This bypasses
-    the implicit size restrctions due to the cross attention mask of LEDTS++. It helps
-    the diffusion model by giving it a favorable image size such as 512x512.
     """
 
     text_guidance_scale: Union[float, list[float]] = 7

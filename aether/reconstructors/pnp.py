@@ -230,30 +230,142 @@ class PnPGenerativeEditingReconstructor(PnPReconstructor):
         self.model_loader.load()
         self.pipe = self.model_loader.pipe
         self.pipe.to("cuda")
-
-
-class PnPLEDITSPPReconstructor(PnPGenerativeEditingReconstructor):
+        
+    def match_image_stats(
+        self, 
+        edited_image: torch.Tensor, 
+        orig_image: torch.Tensor, 
+        current_slice: int,
+    ):
+        """Match the mean and standard deviation of the edited image to those of the original image.
+        If `only_edit_bbox` is True, the statistics are only calculated and matched within the 
+        bounding box.
+        
+        Parameters
+        ----------
+        edited_image: torch.Tensor
+            A (1, 3, h, w) tensor giving the edited image; the second dimension is the RGB channels.
+        orig_image: torch.Tensor
+            A (1, 3, h, w) tensor giving the original image; the second dimension is the RGB channels.
+            Both `edited_image` and `orig_image` should have the same scale, e.g., both normalized
+            between [0, 1].
+        current_slice: int
+            The index of the current object slice used to get slice-specific option values.
+        """
+        if self.options.prior_projection_options.only_edit_bbox:
+            roi_bbox = (slice(None), slice(None))
+        else:
+            roi_bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
+        threshold = self.get_slice_specific_option_value(
+            self.options.prior_projection_options.stats_matching_threshold, current_slice, slice_value_is_list=False
+        )
+        if threshold > 0:
+            mask = (edited_image - orig_image).abs() < threshold
+            mask_selector = torch.zeros_like(mask, dtype=torch.bool)
+            mask_selector[(0, 0, *roi_bbox)] = True
+            mask = mask & mask_selector
+            if torch.count_nonzero(mask) > 0:
+                edited_image = ip.match_mean_std(edited_image, orig_image, mask=mask)
+            else:
+                logger.info("Skipping stats matching because no hot pixels are found within ROI.")
+        return edited_image
+        
+    def run_editing(
+        self,
+        orig_img_mag: torch.Tensor,
+        orig_img_phase: torch.Tensor,
+    ):
+        """Run image editing.
+        
+        Parameters
+        ----------
+        orig_img_phase: torch.Tensor
+            A (n_slices, 3, h, w) tensor giving the original phase image.
+        orig_img_mag: torch.Tensor
+            A (n_slices, 3, h, w) tensor giving the original magnitude image.
+            
+        Returns
+        -------
+        edited_mag_imgs: list[torch.Tensor]
+            A list of (n_slices, 3, h, w) tensors giving the edited magnitude images.
+        edited_phase_imgs: list[torch.Tensor]
+            A list of (n_slices, 3, h, w) tensors giving the edited phase images.
+        """
+        raise NotImplementedError("Not implemented in base class.")
+        
     def project_to_prior(self):
         assert isinstance(self.options.prior_projection_options, api.LEDITSPPOptions)
         
         input = self.x + self.u
 
+        # Convert object to two (n_slices, 3, h, w) tensors of magnitude and phase.
         orig_img_mag, orig_img_phase = ip.object_to_image(
             input, 
             dtype=self.pipe.unet.dtype, 
             unwrap_phase=self.options.prior_projection_options.unwrap_phase_before_editing
         )
+        
+        # Get editing bounding box.
         bbox_slicer = (slice(None),)
         if self.options.prior_projection_options.only_edit_bbox:
             bbox_slicer = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
             orig_img_mag = orig_img_mag[:, :, *bbox_slicer]
             orig_img_phase = orig_img_phase[:, :, *bbox_slicer]
             
+        # Resize input images if needed.
         orig_size = orig_img_mag.shape[-2:]
         if self.options.prior_projection_options.resize_image_edited_to is not None:
             orig_img_mag = T.Resize(self.options.prior_projection_options.resize_image_edited_to)(orig_img_mag)
             orig_img_phase = T.Resize(self.options.prior_projection_options.resize_image_edited_to)(orig_img_phase)
 
+        # Edit images.
+        edited_mag_imgs, edited_phase_imgs = self.run_editing(
+            orig_img_mag=orig_img_mag,
+            orig_img_phase=orig_img_phase,
+        )
+        
+        # Resize edited images back to the original size if needed.
+        if self.options.prior_projection_options.resize_image_edited_to is not None:
+            edited_mag_imgs = T.Resize(orig_size)(edited_mag_imgs)
+            edited_phase_imgs = T.Resize(orig_size)(edited_phase_imgs)
+        
+        # Convert edited images back to the (n_slices, h, w) object.
+        edited_obj = ip.image_to_object(
+            img_mag=edited_mag_imgs,
+            img_phase=edited_phase_imgs
+        )
+        
+        if self.options.prior_projection_options.only_edit_bbox:
+            input[:, *bbox_slicer] = edited_obj
+            v = input
+        else:
+            v = edited_obj
+        self.v = v
+        self.num_prior_projections += 1
+
+
+class PnPLEDITSPPReconstructor(PnPGenerativeEditingReconstructor):
+    def run_editing(
+        self,
+        orig_img_mag: torch.Tensor,
+        orig_img_phase: torch.Tensor,
+    ):
+        """Run image editing.
+        
+        Parameters
+        ----------
+        orig_img_phase: torch.Tensor
+            A (n_slices, 3, h, w) tensor giving the original phase image.
+        orig_img_mag: torch.Tensor
+            A (n_slices, 3, h, w) tensor giving the original magnitude image.
+            
+        Returns
+        -------
+        edited_mag_imgs: list[torch.Tensor]
+            A list of (n_slices, 3, h, w) tensors giving the edited magnitude images.
+        edited_phase_imgs: list[torch.Tensor]
+            A list of (n_slices, 3, h, w) tensors giving the edited phase images.
+        """
         edited_phase_imgs = []
         edited_mag_imgs = []
         for i_part, orig_img in enumerate([orig_img_phase, orig_img_mag]):
@@ -298,23 +410,12 @@ class PnPLEDITSPPReconstructor(PnPGenerativeEditingReconstructor):
                     
                     # Match mean and std within ROI.
                     if self.options.prior_projection_options.match_stats_of_prior_projected_image:
-                        if self.options.prior_projection_options.only_edit_bbox:
-                            roi_bbox = (slice(None), slice(None))
-                        else:
-                            roi_bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
-                        threshold = self.get_slice_specific_option_value(
-                            self.options.prior_projection_options.stats_matching_threshold, i_slice, slice_value_is_list=False
+                        img_slice = self.match_image_stats(
+                            img_slice, 
+                            orig_img_slice_normalized[None, ...], 
+                            i_slice, 
                         )
-                        if threshold > 0:
-                            mask = (img_slice - orig_img_slice_normalized[None, ...]).abs() < threshold
-                            mask_selector = torch.zeros_like(mask, dtype=torch.bool)
-                            mask_selector[(0, 0, *roi_bbox)] = True
-                            mask = mask & mask_selector
-                            if torch.count_nonzero(mask) > 0:
-                                img_slice = ip.match_mean_std(img_slice, orig_img_slice_normalized[None, ...], mask=mask)
-                            else:
-                                logger.info("Skipping stats matching because no hot pixels are found within ROI.")
-                            
+                    
                     img_slice = self.image_normalizer.unnormalize(img_slice)
                     if i_part == 0:
                         edited_phase_imgs.append(img_slice)
@@ -323,18 +424,4 @@ class PnPLEDITSPPReconstructor(PnPGenerativeEditingReconstructor):
         edited_phase_imgs = torch.cat(edited_phase_imgs, dim=0)
         edited_mag_imgs = torch.cat(edited_mag_imgs, dim=0)
         
-        if self.options.prior_projection_options.resize_image_edited_to is not None:
-            edited_mag_imgs = T.Resize(orig_size)(edited_mag_imgs)
-            edited_phase_imgs = T.Resize(orig_size)(edited_phase_imgs)
-        
-        edited_obj = ip.image_to_object(
-            img_mag=edited_mag_imgs,
-            img_phase=edited_phase_imgs
-        )
-        if self.options.prior_projection_options.only_edit_bbox:
-            input[:, *bbox_slicer] = edited_obj
-            v = input
-        else:
-            v = edited_obj
-        self.v = v
-        self.num_prior_projections += 1
+        return edited_mag_imgs, edited_phase_imgs
