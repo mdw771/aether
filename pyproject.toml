@@ -19,11 +19,12 @@ dependencies = [
     "torch>=2.4.1",
     "torchvision",
     "tqdm",
-    "diffusers==0.32.2",
-    "accelerate==1.4.0",
-    "transformers==4.49.0",
-    "sentencepiece==0.2.0",
+    "diffusers@git+https://github.com/huggingface/diffusers.git@cbecc33570cf219ca8460f465bb427725ece01a0",
+    "accelerate",
+    "transformers>=4.55",
+    "sentencepiece",
     "ptychi@git+https://github.com/AdvancedPhotonSource/pty-chi.git@d165f787b0f69c879332f7e8a2788ad992c1b912",
+    "protobuf>=6.32.0",
 ]
 dynamic = ["version"]
 
