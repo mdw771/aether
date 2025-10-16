@@ -193,9 +193,84 @@ class PnPReconstructor(IterativeReconstructor):
                 
                 self.pbar.update(1)
                 self.current_epoch += 1
+                
+                
+class PnPImageEditingReconstructor(PnPReconstructor):
+    def run_editing(
+        self,
+        orig_img_mag: torch.Tensor,
+        orig_img_phase: torch.Tensor,
+    ):
+        """Run image editing.
+        
+        Parameters
+        ----------
+        orig_img_phase: torch.Tensor
+            A (n_slices, 3, h, w) tensor giving the original phase image.
+        orig_img_mag: torch.Tensor
+            A (n_slices, 3, h, w) tensor giving the original magnitude image.
+            
+        Returns
+        -------
+        edited_mag_imgs: list[torch.Tensor]
+            A list of (n_slices, 3, h, w) tensors giving the edited magnitude images.
+        edited_phase_imgs: list[torch.Tensor]
+            A list of (n_slices, 3, h, w) tensors giving the edited phase images.
+        """
+        raise NotImplementedError("Not implemented in base class.")
+        
+    def project_to_prior(self):
+        assert isinstance(self.options.prior_projection_options, api.ImageEditingOptions)
+        
+        input = self.x + self.u
+
+        # Convert object to two (n_slices, 3, h, w) tensors of magnitude and phase.
+        orig_img_mag, orig_img_phase = ip.object_to_image(
+            input, 
+            dtype=self.pipe.unet.dtype, 
+            unwrap_phase=self.options.prior_projection_options.unwrap_phase_before_editing
+        )
+        
+        # Get editing bounding box.
+        bbox_slicer = (slice(None),)
+        if self.options.prior_projection_options.only_edit_bbox:
+            bbox_slicer = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
+            orig_img_mag = orig_img_mag[:, :, *bbox_slicer]
+            orig_img_phase = orig_img_phase[:, :, *bbox_slicer]
+            
+        # Resize input images if needed.
+        orig_size = orig_img_mag.shape[-2:]
+        if self.options.prior_projection_options.resize_image_edited_to is not None:
+            orig_img_mag = T.Resize(self.options.prior_projection_options.resize_image_edited_to)(orig_img_mag)
+            orig_img_phase = T.Resize(self.options.prior_projection_options.resize_image_edited_to)(orig_img_phase)
+
+        # Edit images.
+        edited_mag_imgs, edited_phase_imgs = self.run_editing(
+            orig_img_mag=orig_img_mag,
+            orig_img_phase=orig_img_phase,
+        )
+        
+        # Resize edited images back to the original size if needed.
+        if self.options.prior_projection_options.resize_image_edited_to is not None:
+            edited_mag_imgs = T.Resize(orig_size)(edited_mag_imgs)
+            edited_phase_imgs = T.Resize(orig_size)(edited_phase_imgs)
+        
+        # Convert edited images back to the (n_slices, h, w) object.
+        edited_obj = ip.image_to_object(
+            img_mag=edited_mag_imgs,
+            img_phase=edited_phase_imgs
+        )
+        
+        if self.options.prior_projection_options.only_edit_bbox:
+            input[:, *bbox_slicer] = edited_obj
+            v = input
+        else:
+            v = edited_obj
+        self.v = v
+        self.num_prior_projections += 1
 
 
-class PnPGenerativeEditingReconstructor(PnPReconstructor):
+class PnPGenerativeEditingReconstructor(PnPImageEditingReconstructor):
     def __init__(
         self,
         parameter_group: PtychographyParameterGroup,
@@ -272,79 +347,6 @@ class PnPGenerativeEditingReconstructor(PnPReconstructor):
             else:
                 logger.info("Skipping stats matching because no hot pixels are found within ROI.")
         return edited_image
-        
-    def run_editing(
-        self,
-        orig_img_mag: torch.Tensor,
-        orig_img_phase: torch.Tensor,
-    ):
-        """Run image editing.
-        
-        Parameters
-        ----------
-        orig_img_phase: torch.Tensor
-            A (n_slices, 3, h, w) tensor giving the original phase image.
-        orig_img_mag: torch.Tensor
-            A (n_slices, 3, h, w) tensor giving the original magnitude image.
-            
-        Returns
-        -------
-        edited_mag_imgs: list[torch.Tensor]
-            A list of (n_slices, 3, h, w) tensors giving the edited magnitude images.
-        edited_phase_imgs: list[torch.Tensor]
-            A list of (n_slices, 3, h, w) tensors giving the edited phase images.
-        """
-        raise NotImplementedError("Not implemented in base class.")
-        
-    def project_to_prior(self):
-        assert isinstance(self.options.prior_projection_options, api.LEDITSPPOptions)
-        
-        input = self.x + self.u
-
-        # Convert object to two (n_slices, 3, h, w) tensors of magnitude and phase.
-        orig_img_mag, orig_img_phase = ip.object_to_image(
-            input, 
-            dtype=self.pipe.unet.dtype, 
-            unwrap_phase=self.options.prior_projection_options.unwrap_phase_before_editing
-        )
-        
-        # Get editing bounding box.
-        bbox_slicer = (slice(None),)
-        if self.options.prior_projection_options.only_edit_bbox:
-            bbox_slicer = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
-            orig_img_mag = orig_img_mag[:, :, *bbox_slicer]
-            orig_img_phase = orig_img_phase[:, :, *bbox_slicer]
-            
-        # Resize input images if needed.
-        orig_size = orig_img_mag.shape[-2:]
-        if self.options.prior_projection_options.resize_image_edited_to is not None:
-            orig_img_mag = T.Resize(self.options.prior_projection_options.resize_image_edited_to)(orig_img_mag)
-            orig_img_phase = T.Resize(self.options.prior_projection_options.resize_image_edited_to)(orig_img_phase)
-
-        # Edit images.
-        edited_mag_imgs, edited_phase_imgs = self.run_editing(
-            orig_img_mag=orig_img_mag,
-            orig_img_phase=orig_img_phase,
-        )
-        
-        # Resize edited images back to the original size if needed.
-        if self.options.prior_projection_options.resize_image_edited_to is not None:
-            edited_mag_imgs = T.Resize(orig_size)(edited_mag_imgs)
-            edited_phase_imgs = T.Resize(orig_size)(edited_phase_imgs)
-        
-        # Convert edited images back to the (n_slices, h, w) object.
-        edited_obj = ip.image_to_object(
-            img_mag=edited_mag_imgs,
-            img_phase=edited_phase_imgs
-        )
-        
-        if self.options.prior_projection_options.only_edit_bbox:
-            input[:, *bbox_slicer] = edited_obj
-            v = input
-        else:
-            v = edited_obj
-        self.v = v
-        self.num_prior_projections += 1
 
 
 class PnPLEDITSPPReconstructor(PnPGenerativeEditingReconstructor):

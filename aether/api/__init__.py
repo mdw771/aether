@@ -14,6 +14,7 @@ from .options.pnp import (
     PnPReconstructorOptions,
     PnPObjectOptions,
     LEDITSPPOptions,
+    ImageEditingOptions,
 )
 from .options.latent_admmdiff import (
     ADMMDiffOptions,
