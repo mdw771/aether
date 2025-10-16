@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  PTYCHO_CI_DATA_DIR: /local/aether-ci-data/ci_data
+  AETHER_CI_DATA_DIR: /local/aether-ci-data/ci_data
 
 permissions:
   contents: read
@@ -33,7 +33,7 @@ jobs:
       id: update_test_data
       run: |
         PACKAGE_DIR=$(pwd)
-        cd $PTYCHO_CI_DATA_DIR
+        cd $AETHER_CI_DATA_DIR
         git pull origin main
         cd $PACKAGE_DIR
 
