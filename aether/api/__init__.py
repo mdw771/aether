@@ -16,6 +16,11 @@ from .options.pnp import (
     LEDITSPPOptions,
     ImageEditingOptions,
 )
+from .options.pnp_woof import (
+    PnPWoofReconstructorOptions,
+    PnPWoofObjectOptions,
+    WoofOptions,
+)
 from .options.latent_admmdiff import (
     ADMMDiffOptions,
     ADMMDiffReconstructorOptions,

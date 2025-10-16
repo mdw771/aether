@@ -219,7 +219,7 @@ class PnPImageEditingReconstructor(PnPReconstructor):
         """
         raise NotImplementedError("Not implemented in base class.")
         
-    def project_to_prior(self):
+    def project_to_prior(self, object_to_image_dtype: torch.dtype = None):
         assert isinstance(self.options.prior_projection_options, api.ImageEditingOptions)
         
         input = self.x + self.u
@@ -227,7 +227,7 @@ class PnPImageEditingReconstructor(PnPReconstructor):
         # Convert object to two (n_slices, 3, h, w) tensors of magnitude and phase.
         orig_img_mag, orig_img_phase = ip.object_to_image(
             input, 
-            dtype=self.pipe.unet.dtype, 
+            dtype=(object_to_image_dtype if object_to_image_dtype is not None else torch.get_default_dtype()), 
             unwrap_phase=self.options.prior_projection_options.unwrap_phase_before_editing
         )
         
@@ -347,6 +347,9 @@ class PnPGenerativeEditingReconstructor(PnPImageEditingReconstructor):
             else:
                 logger.info("Skipping stats matching because no hot pixels are found within ROI.")
         return edited_image
+    
+    def project_to_prior(self, *args, **kwargs):
+        return super().project_to_prior(self.pipe.unet.dtype)
 
 
 class PnPLEDITSPPReconstructor(PnPGenerativeEditingReconstructor):

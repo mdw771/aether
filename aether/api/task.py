@@ -16,6 +16,7 @@ import ptychi.maps as maps
 import ptychi.utils as utils
 
 import aether.reconstructors.pnp
+import aether.reconstructors.pnp_woof
 import aether.io as fio
 import aether.api as api
 
@@ -109,16 +110,22 @@ class PnPPtychographyTask(PtychographyTask):
         reconstructor_class = self.select_reconstructor_class()
         logger.info(f"Using {reconstructor_class.__name__}.")
         
+        reconstructor_kwargs = {}
+        if self.model_loader is not None:
+            reconstructor_kwargs["model_loader"] = self.model_loader
+        
         self.reconstructor = reconstructor_class(
             parameter_group=par_group,
-            model_loader=self.model_loader,
             options=self.reconstructor_options,
+            **reconstructor_kwargs,
         )
         self.reconstructor.build()
         
     def select_reconstructor_class(self) -> type[aether.reconstructors.pnp.PnPReconstructor]:
         if isinstance(self.reconstructor_options.prior_projection_options, api.LEDITSPPOptions):
             return aether.reconstructors.pnp.PnPLEDITSPPReconstructor
+        elif isinstance(self.reconstructor_options.prior_projection_options, api.WoofOptions):
+            return aether.reconstructors.pnp_woof.PnPWoofReconstructor
         else:
             raise ValueError(
                 "Unable to infer reconstructor class from reconstructor_options.prior_projection_options."

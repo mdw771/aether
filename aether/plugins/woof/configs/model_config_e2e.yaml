@@ -1,0 +1,45 @@
+main_model_config: {}
+
+feature_extractor_config:
+  model_class: Encoder
+  num_in_channels: 1
+  num_out_channels: 128
+  num_levels: 1
+  base_channels: 32
+  use_batchnorm: true
+  use_downsampling: false
+  kernel_sizes_all_convs: [3, 32]
+  strides_all_convs: [1, 32]
+  paddings_all_convs: ["same", "valid"]
+
+latent_processor_config:
+  model_class: TransformerLatentProcessor
+  num_in_channels: 128
+  num_hidden_dims: 512
+  num_feedforward_hidden_dims: 768
+  n_layers: 4
+  dropout: 0.2
+  num_projected_out_dims: null
+
+decoder_config:
+  model_class: Decoder
+  num_in_channels: 512
+  num_out_channels: 1
+  num_levels: 5
+  base_channels: 16
+  use_batchnorm: true
+  use_interpolation_in_last_layer: false
+
+training_config:
+  patch_size: 32
+  num_epochs: 100
+  optimizer: Adam
+  learning_rate: 1.0E-4
+  weight_decay: 1.0E-3
+  dataset_root_dir: data/generated/coco_train2017
+  train_val_split_ratio: 0.9
+  checkpointing_dir: checkpoints/e2e_enc_trans_dec_128_512_768_transLayers_4_transDrop_0p2_lr_1e-4_cyclicSdl_standardized
+  checkpointing_interval: 10
+  test_hook_command: null
+  lr_scheduler_up_epochs: 5
+  random_seed: 42

@@ -50,6 +50,21 @@ class ImageEditingOptions(PriorProjectionOptions):
     
     unwrap_phase_before_editing: bool = False
     """If True, the phase of the object will be unwrapped before editing."""
+    
+    match_stats_of_prior_projected_image: bool = False
+    """If True, after each prior projection, the mean and standard deviation of the 
+    prior-projected image will be matched to those of the data-projected image.
+    """
+    
+    stats_matching_threshold: float | list[float] = 0.5
+    """The absolute difference threshold used to generate the mask for stats matching.
+    The algorithm calculates the absolute difference between the normalized images before
+    and after editing; mean and standard deviation are only calculated on pixels where the
+    absolute change is less than this threshold. Set to 0 to disable stats matching; set
+    to 1 to calculate stats using all pixels. If a list of floats is provided, it will be
+    assumed that each element specifies the value for a certain slice. This field is disregarded
+    if `match_stats_of_prior_projected_image` is False.
+    """
 
 
 @dataclass
@@ -88,21 +103,6 @@ class LEDITSPPOptions(ImageEditingOptions):
     
     model_path: str = "stable-diffusion-v1-5/stable-diffusion-v1-5"
     """The path to the model to use for the guided sampling."""
-    
-    match_stats_of_prior_projected_image: bool = False
-    """If True, after each prior projection, the mean and standard deviation of the 
-    prior-projected image will be matched to those of the data-projected image.
-    """
-    
-    stats_matching_threshold: float | list[float] = 0.5
-    """The absolute difference threshold used to generate the mask for stats matching.
-    The algorithm calculates the absolute difference between the normalized images before
-    and after editing; mean and standard deviation are only calculated on pixels where the
-    absolute change is less than this threshold. Set to 0 to disable stats matching; set
-    to 1 to calculate stats using all pixels. If a list of floats is provided, it will be
-    assumed that each element specifies the value for a certain slice. This field is disregarded
-    if `match_stats_of_prior_projected_image` is False.
-    """
     
     generator_seed: Optional[int] = None
     """The seed for the generator used by the diffusion model. This is needed to guarantee

@@ -60,6 +60,26 @@ class ImageNormalizer:
             The unnormalized image.
         """
         return img * (self.max_val - self.min_val) + self.min_val
+    
+    
+class ImageStandardizer:
+    """Standardize an image to have mean 0 and std 1.
+    """
+    def __init__(self):
+        self.mean = None
+        self.std = None
+        
+    def standardize(self, img: torch.Tensor):
+        """Standardize an image to have mean 0 and std 1.
+        """
+        self.mean = img.mean()
+        self.std = img.std()
+        return (img - self.mean) / self.std
+    
+    def unstandardize(self, img: torch.Tensor):
+        """Unstandardize an image from mean 0 and std 1.
+        """
+        return img * self.std + self.mean
 
 
 def match_mean_std(
@@ -194,3 +214,29 @@ def pil_image_to_tensor(
     img = img / 255.0
     img = img.permute(2, 0, 1)[None, ...]
     return img
+
+
+def pad_to_divisible_by_patch_size(
+    input: torch.Tensor, 
+    patch_size: int
+) -> torch.Tensor:
+    """Pad a stack of images to be divisible by a patch size.
+    
+    Parameters
+    ----------
+    input: torch.Tensor
+        A (n_slices, n_channels, h, w) tensor giving the input data.
+    patch_size: int
+        The patch size to use for padding.
+        
+    Returns
+    -------
+    torch.Tensor
+        A (n_slices, n_channels, h, w) tensor giving the padded input data.
+    Tuple[int, int]
+        The amount of padding applied to the height and width.
+    """
+    pad_y = patch_size - (input.shape[2] % patch_size)
+    pad_x = patch_size - (input.shape[3] % patch_size)
+    result = torch.nn.functional.pad(input, (0, pad_x, 0, pad_y), mode="constant", value=0)
+    return result, (pad_y, pad_x)
