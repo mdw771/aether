@@ -64,7 +64,25 @@ class PnPWoofReconstructor(PnPImageEditingReconstructor):
         self.model.to(torch.get_default_device())
 
     def run_editing(self, orig_img_mag: Tensor, orig_img_phase: Tensor):
+        """Run image editing.
+        
+        Parameters
+        ----------
+        orig_img_phase: torch.Tensor
+            A (n_slices, 3, h, w) tensor giving the original phase image.
+        orig_img_mag: torch.Tensor
+            A (n_slices, 3, h, w) tensor giving the original magnitude image.
+            
+        Returns
+        -------
+        edited_mag_imgs: list[torch.Tensor]
+            A list of (n_slices, 3, h, w) tensors giving the edited magnitude images.
+        edited_phase_imgs: list[torch.Tensor]
+            A list of (n_slices, 3, h, w) tensors giving the edited phase images.
+        """
         assert isinstance(self.options.prior_projection_options, api.WoofOptions)
+        
+        n_input_channels = orig_img_mag.shape[1]
         
         edited_image_components = []
         for i, orig_img_component in enumerate([orig_img_mag, orig_img_phase]):
@@ -86,6 +104,7 @@ class PnPWoofReconstructor(PnPImageEditingReconstructor):
                     edited_image_components.append(self.options.prior_projection_options.constant_phase_value)
                 continue
         
+            # Average over channel dimension since model expects a single channel input.
             orig_img_component = orig_img_component.mean(dim=1, keepdim=True)
 
             # Standardize and pad the image to be divisible by the patch size
@@ -106,7 +125,7 @@ class PnPWoofReconstructor(PnPImageEditingReconstructor):
                 edited_img_component = edited_img_component[:, :, :, :-pad_x]
             edited_img_component = standardizer.unstandardize(edited_img_component)
             
-            edited_image_components.append(edited_img_component)
+            edited_image_components.append(edited_img_component.repeat(1, n_input_channels, 1, 1))
             
         edited_image_mag, edited_image_phase = edited_image_components
         return edited_image_mag, edited_image_phase
