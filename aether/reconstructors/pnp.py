@@ -338,9 +338,9 @@ class PnPImageEditingReconstructor(PnPReconstructor):
             The index of the current object slice used to get slice-specific option values.
         """
         if self.options.prior_projection_options.only_edit_bbox:
-            roi_bbox = (slice(None), slice(None))
-        else:
             roi_bbox = self.parameter_group.object.roi_bbox.get_bbox_with_top_left_origin().get_slicer()
+        else:
+            roi_bbox = (slice(None), slice(None))
         threshold = self.get_slice_specific_option_value(
             self.options.prior_projection_options.stats_matching_threshold, current_slice, slice_value_is_list=False
         )
