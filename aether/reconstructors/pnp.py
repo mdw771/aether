@@ -66,6 +66,7 @@ class PnPReconstructor(IterativeReconstructor):
         
     def build_variables(self):
         self.x = self.parameter_group.object.data.detach()
+        self.x_relaxed = self.x.clone()
         self.v = torch.zeros_like(self.x)
         self.u = torch.zeros_like(self.x)
         
@@ -167,8 +168,11 @@ class PnPReconstructor(IterativeReconstructor):
     def project_to_prior(self):
         raise NotImplementedError("Not implemented in base class.")
         
-    def relax_prior_projection_variable(self):
-        self.v = self.options.update_relaxation * self.v + (1 - self.options.update_relaxation) * self.x
+    def relax_x(self):
+        if self.current_epoch == 0:
+            self.x_relaxed = self.x.clone()
+        else:
+            self.x_relaxed = self.options.update_relaxation * self.x + (1 - self.options.update_relaxation) * self.v
 
     def update_dual(self):
         self.u = self.u + self.x - self.v
@@ -176,8 +180,8 @@ class PnPReconstructor(IterativeReconstructor):
     def run_admm_epoch(self):
         self.project_to_data()
         if self.use_admm():
+            self.relax_x()
             self.project_to_prior()
-            self.relax_prior_projection_variable()
             self.update_dual()
             
     def run_pre_epoch_hooks(self):
@@ -238,7 +242,7 @@ class PnPImageEditingReconstructor(PnPReconstructor):
         """
         assert isinstance(self.options.prior_projection_options, api.ImageEditingOptions)
         
-        input = self.x + self.u
+        input = self.x_relaxed + self.u
 
         # Convert object to two (n_slices, 3, h, w) tensors of magnitude and phase.
         orig_img_mag, orig_img_phase = ip.object_to_image(
@@ -299,7 +303,6 @@ class PnPImageEditingReconstructor(PnPReconstructor):
         orig_img_mag: torch.Tensor, 
         orig_img_phase: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        #TODO: check this
         if self.options.prior_projection_options.edit_magnitude:
             for i_slice, (edited_mag_slice, orig_mag_slice) in enumerate(zip(edited_mag_imgs, orig_img_mag)):
                 edited_mag_imgs[i_slice] = self.match_image_stats(
