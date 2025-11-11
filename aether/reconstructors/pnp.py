@@ -4,6 +4,7 @@
 from typing import Union, Any
 import logging
 
+import pandas as pd
 import torch
 import torchvision.transforms as T
 from diffusers import LEditsPPPipelineStableDiffusion
@@ -16,6 +17,35 @@ from aether.io import HuggingFaceModelLoader
 import aether.image_proc as ip
 
 logger = logging.getLogger(__name__)
+
+
+class ADMMLossTracker:
+    def __init__(self):
+        self.table = pd.DataFrame(
+            columns=["epoch", "data_loss", "prime_residual_norm", "dual_residual_norm"]
+        )
+        
+    def track_loss(
+        self, 
+        epoch: int, 
+        data_loss: float, 
+        prime_residual_norm: float, 
+        dual_residual_norm: float,
+    ):
+        self.table.loc[epoch] = [epoch, data_loss, prime_residual_norm, dual_residual_norm]
+        
+    def print(self):
+        print(self.table)
+        
+    def print_latest(self) -> None:
+        logger.info(
+            "Epoch: {}, Data Loss: {}, Prime Residual Norm: {}, Dual Residual Norm: {}".format(
+                int(self.table.iloc[-1].epoch),
+                self.table.iloc[-1].data_loss,
+                self.table.iloc[-1].prime_residual_norm,
+                self.table.iloc[-1].dual_residual_norm,
+            )
+        )
 
 
 class PnPReconstructor(IterativeReconstructor):
@@ -41,12 +71,16 @@ class PnPReconstructor(IterativeReconstructor):
                 
         self.x = None
         self.v = None
+        self.v_km1 = None
         self.u = None
+        self.x_relaxed = None
         
         self.num_prior_projections = 0
         self.num_data_projections = 0
         
         self.image_normalizer = ip.ImageNormalizer()
+        
+        self.admm_loss_tracker = ADMMLossTracker()
                         
     def check_inputs(self, *args, **kwargs):
         super().check_inputs(*args, **kwargs)
@@ -69,6 +103,7 @@ class PnPReconstructor(IterativeReconstructor):
         self.x_relaxed = self.x.clone()
         self.v = torch.zeros_like(self.x)
         self.u = torch.zeros_like(self.x)
+        self.v_km1 = torch.zeros_like(self.x)
         
     def build_counter(self):
         super().build_counter()
@@ -182,13 +217,18 @@ class PnPReconstructor(IterativeReconstructor):
     def update_dual(self):
         self.u = self.u + self.x_relaxed - self.v
         
+    def update_last_v(self):
+        self.v_km1 = self.v.clone()
+        
     def run_admm_epoch(self):
         self.project_to_data()
         if self.use_admm():
             self.relax_x()
+            self.update_last_v()
             self.project_to_prior()
             self.apply_v_mixing()
             self.update_dual()
+            self.track_admm_loss()
             
     def run_pre_epoch_hooks(self):
         pass
@@ -203,7 +243,25 @@ class PnPReconstructor(IterativeReconstructor):
                 
                 self.pbar.update(1)
                 self.current_epoch += 1
-                
+    
+    def get_prime_residual_norm(self) -> float:
+        return torch.linalg.norm(self.x - self.v).item()
+    
+    def get_dual_residual_norm(self) -> float:
+        return torch.linalg.norm(self.v - self.v_km1).item() * self.options.proximal_penalty
+    
+    def get_data_loss(self) -> float:
+        return self.ptychi_task.reconstructor.loss_tracker.table.iloc[-1]["loss"]
+    
+    def track_admm_loss(self):
+        self.admm_loss_tracker.track_loss(
+            epoch=self.current_epoch,
+            data_loss=self.get_data_loss(),
+            prime_residual_norm=self.get_prime_residual_norm(),
+            dual_residual_norm=self.get_dual_residual_norm(),
+        )
+        self.admm_loss_tracker.print_latest()
+
                 
 class PnPImageEditingReconstructor(PnPReconstructor):
     def run_editing(
