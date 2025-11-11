@@ -172,7 +172,12 @@ class PnPReconstructor(IterativeReconstructor):
         if self.current_epoch == 0:
             self.x_relaxed = self.x.clone()
         else:
-            self.x_relaxed = self.options.update_relaxation * self.x + (1 - self.options.update_relaxation) * self.v
+            self.x_relaxed = self.options.update_relaxation * self.x + \
+                (1 - self.options.update_relaxation) * self.v
+            
+    def apply_v_mixing(self):
+        self.v = (1 - self.options.prior_projection_options.result_mixing_factor) * (self.x_relaxed + self.u) + \
+            self.options.prior_projection_options.result_mixing_factor * self.v
 
     def update_dual(self):
         self.u = self.u + self.x_relaxed - self.v
@@ -182,6 +187,7 @@ class PnPReconstructor(IterativeReconstructor):
         if self.use_admm():
             self.relax_x()
             self.project_to_prior()
+            self.apply_v_mixing()
             self.update_dual()
             
     def run_pre_epoch_hooks(self):

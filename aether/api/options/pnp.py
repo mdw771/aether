@@ -10,7 +10,12 @@ import ptychi.api as pcapi
 
 @dataclass
 class PriorProjectionOptions(pcapi.base.Options):
-    pass
+    result_mixing_factor: float = 1.0
+    """The factor by which the result of prior projection is mixed with the current
+    solution of the data projection problem.The result is updated as
+    `v = (1 - mixing_factor) * (x + u) + mixing_factor * v`. Reduce this value to bound
+    the changes caused by prior projection.
+    """
 
 
 @dataclass
