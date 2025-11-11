@@ -175,7 +175,7 @@ class PnPReconstructor(IterativeReconstructor):
             self.x_relaxed = self.options.update_relaxation * self.x + (1 - self.options.update_relaxation) * self.v
 
     def update_dual(self):
-        self.u = self.u + self.x - self.v
+        self.u = self.u + self.x_relaxed - self.v
         
     def run_admm_epoch(self):
         self.project_to_data()
