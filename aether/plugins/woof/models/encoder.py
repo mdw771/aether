@@ -15,6 +15,7 @@ class Encoder(nn.Module):
         kernel_sizes_all_convs: tuple[int, int] = (3, 3),
         strides_all_convs: tuple[int, int] = (1, 1),
         paddings_all_convs: tuple[int | str, int | str] = ("same", "same"),
+        dropout: float = 0.0,
     ):
         """
         Convolutional encoder model with adjustable number of levels.
@@ -40,6 +41,8 @@ class Encoder(nn.Module):
             The strides of the two Conv2d layers in each downsampling block.
         paddings_all_convs : tuple[int | str, int | str]
             The paddings of the two Conv2d layers in each downsampling block.
+        dropout : float
+            The dropout rate.
         """
         super().__init__()
         self.num_levels = num_levels
@@ -51,7 +54,8 @@ class Encoder(nn.Module):
         self.kernel_sizes_all_convs = kernel_sizes_all_convs
         self.strides_all_convs = strides_all_convs
         self.paddings_all_convs = paddings_all_convs
-
+        self.dropout = dropout
+        
         self.encoder = None
         self.build_network()
         
@@ -112,6 +116,8 @@ class Encoder(nn.Module):
         if self.use_batchnorm:
             blocks.append(nn.BatchNorm2d(num_out_channels))
         blocks.append(nn.ReLU())
+        if self.dropout > 0.0:
+            blocks.append(nn.Dropout(self.dropout))
         if self.use_downsampling:
             blocks.append(nn.MaxPool2d((2, 2)))
 

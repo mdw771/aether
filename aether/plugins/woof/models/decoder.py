@@ -1,5 +1,6 @@
 from typing import Optional
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -13,8 +14,10 @@ class Decoder(nn.Module):
         num_out_channels: int = 1,
         num_levels: int = 3, 
         base_channels: int = 32, 
+        dropout: float = 0.0,
         use_batchnorm: bool = False,
         use_interpolation_in_last_layer: bool = False,
+        use_skip_connection: bool = False,
     ):
         """
         Convolutional decoder model with adjustable number of levels.
@@ -28,20 +31,27 @@ class Decoder(nn.Module):
         base_channels : int
             The base number of channels. In the encoder part, the number of output channels
             of level `i` is `base_channels * 2 ** i`.
+        dropout : float
+            The dropout rate.
         use_batchnorm : bool
             Whether to use batch normalization.
         use_interpolation_in_last_layer : bool
             Whether to use interpolation in the last layer. WHen this is True, `target_size`
             must be given when calling the forward method.
+        use_skip_connection : bool
+            If True, the forward method will take an additional argument `skip_conn_input`
+            with the same size as the output tensor, which will be added to the output.
         """
         super().__init__()
         self.num_levels = num_levels
         self.num_in_channels = num_in_channels
         self.num_out_channels = num_out_channels
         self.base_channels = base_channels
+        self.dropout = dropout
         self.use_batchnorm = use_batchnorm
         self.use_interpolation_in_last_layer = use_interpolation_in_last_layer
-
+        self.use_skip_connection = use_skip_connection
+        
         self.decoder_main = None
         self.decoder_last_layer = None
         self.build_network()
@@ -94,11 +104,19 @@ class Decoder(nn.Module):
         if self.use_batchnorm:
             blocks.append(nn.BatchNorm2d(num_out_channels))
         blocks.append(nn.ReLU())
+        if self.dropout > 0.0:
+            blocks.append(nn.Dropout(self.dropout))
         if not (level == self.num_levels - 1 and self.use_interpolation_in_last_layer):
             blocks.append(nn.Upsample(scale_factor=2, mode="bilinear"))
         return blocks
 
-    def forward(self, x, target_size: Optional[tuple[int, int]] = None):
+    def forward(
+        self, 
+        x: torch.Tensor, 
+        target_size: Optional[tuple[int, int]] = None, 
+        skip_conn_input: Optional[torch.Tensor] = None,
+        return_tensor_before_skip_conn: bool = False
+    ):
         """
         Forward pass through the decoder.
 
@@ -109,11 +127,18 @@ class Decoder(nn.Module):
         target_size: Optional[tuple[int, int]]
             The target size of the output. If `use_interpolation_in_last_layer`
             is True, this must be given.
+        skip_conn_input: Optional[torch.Tensor]
+            A (n, num_input_channels, h, w) tensor. If `use_skip_connection`
+            is True, this must be given.
+        return_tensor_before_skip_conn: bool
+            If True, the tensor before the skip connection will be returned
+            along with the output tensor.
 
         Returns
         -------
-        torch.Tensor
-            A (n, num_output_channels, h, w) tensor.
+        torch.Tensor | tuple[torch.Tensor, torch.Tensor]
+            If `return_tensor_before_skip_conn` is False, a (n, num_output_channels, h, w) tensor.
+            If `return_tensor_before_skip_conn` is True, a tuple of two (n, num_output_channels, h, w) tensors.
         """
         x = self.decoder_main(x)
         if self.use_interpolation_in_last_layer:
@@ -121,7 +146,16 @@ class Decoder(nn.Module):
                 raise ValueError("target_size must be given when use_interpolation_in_last_layer is True.")
             x = F.interpolate(x, size=target_size, mode="bilinear")
         x = self.decoder_last_layer(x)
-        return x
+        
+        x_before_skip_conn = x
+        if self.use_skip_connection:
+            if skip_conn_input is None:
+                raise ValueError("skip_conn_input must be given when use_skip_connection is True.")
+            x = x + skip_conn_input
+        if return_tensor_before_skip_conn:
+            return x, x_before_skip_conn
+        else:
+            return x
     
     
 class UpsampleConv2d(nn.Module):
