@@ -11,6 +11,9 @@ from aether.api.options.pnp import ImageEditingOptions, PnPReconstructorOptions,
 class WoofOptions(ImageEditingOptions):
     checkpoint_path: str = None
     """Path to the checkpoint file (*.pth) of the model."""
+    
+    config_path: str = None
+    """Path to the config file (*.yaml) of the model."""
 
     def check(self, *args, **kwargs) -> None:
         res = super().check(*args, **kwargs)
@@ -19,6 +22,11 @@ class WoofOptions(ImageEditingOptions):
             raise ValueError("Checkpoint must be a .pth file.")
         if not os.path.exists(self.checkpoint_path):
             raise ValueError("Checkpoint file does not exist.")
+        
+        if not self.config_path.endswith(".yaml") or not self.config_path.endswith(".yml"):
+            raise ValueError("Config must be a .yaml file.")
+        if not os.path.exists(self.config_path):
+            raise ValueError("Config file does not exist.")
         
         if self.match_stats_of_prior_projected_image:
             raise NotImplementedError("Stats matching is not supported for Woof yet.")

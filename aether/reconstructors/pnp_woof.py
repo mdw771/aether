@@ -15,19 +15,7 @@ from aether.image_proc import ImageStandardizer, pad_to_divisible_by_patch_size
 
 
 class PnPWoofReconstructor(PnPImageEditingReconstructor):
-    
-    model_config_path = os.path.realpath(
-        os.path.join(
-            os.path.dirname(aether.__file__), 
-            "plugins", 
-            "woof", 
-            "configs", 
-            "model_config_e2e.yaml",
-        )
-    )
-    
-    with open(model_config_path, "r") as f:
-        model_config = yaml.safe_load(f)
+    model_config: dict = None
         
     def build(self):
         super().build()
@@ -41,7 +29,10 @@ class PnPWoofReconstructor(PnPImageEditingReconstructor):
         checkpoint = torch.load(self.options.prior_projection_options.checkpoint_path)
         self.model.load_state_dict(checkpoint["model"])
     
-    def build_model(self):
+    def build_model(self):        
+        with open(self.options.prior_projection_options.config_path, "r") as f:
+            self.model_config = yaml.safe_load(f)
+        
         encoder = getattr(
             woof.models.encoder, self.model_config["feature_extractor_config"]["model_class"]
         )(
