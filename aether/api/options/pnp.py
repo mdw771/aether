@@ -164,11 +164,11 @@ class PnPReconstructorOptions(pcapi.base.Options):
     `update_relaxation == 1`.
     """
     
-    update_relaxation: float = 1.0
-    """The relaxation factor for the prior projection variable in ADMM. After
-    each prior projection, the variable is updated as `v = gamma * v + (1 - gamma) * x`.
-    ADMM reduces to alternating projection when `proximal_penalty == 0` and 
-    `update_relaxation == 1`.
+    relaxation_factor: float = 1.0
+    """The relaxation factor. After the x-update step, x is updated as
+    `x = relaxation_factor * x + (1 - relaxation_factor) * v`. Over-relaxation
+    (i.e., `relaxation_factor > 1`) can be used to improve convergence.
+    See Boyd et al. (2011).
     """
     
     batch_size: int = 1

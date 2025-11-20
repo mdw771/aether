@@ -101,7 +101,7 @@ class TestDiffusionPnP(tutils.TungstenDataTester):
         options.reconstructor_options.num_epochs = 2
         options.reconstructor_options.use_prior_projected_data_as_final_result = False
         options.reconstructor_options.proximal_penalty = 1e-4
-        options.reconstructor_options.update_relaxation = 0.9
+        options.reconstructor_options.relaxation_factor = 0.9
         options.reconstructor_options.batch_size = 100
         task = api.PnPPtychographyTask(options)
         task.run()
